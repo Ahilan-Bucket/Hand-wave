@@ -329,7 +329,7 @@ if page == "Simulator":
             status_msg = f"Static Square Well (width = {width:.1f})"
             
         elif potential_mode == "Static Harmonic Oscillator":
-            k = st.slider("Spring Constant (k)", 0.1, 5.0, 0.5)
+            k = st.slider("Spring Constant (k)", 0.1, 50.0, 5.0)
             V_physics = 0.5 * k * x_internal**2
             # scale a bit so it shows nicely under energies
             V_physics = V_physics / np.max(V_physics) * 50
