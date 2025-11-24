@@ -243,57 +243,60 @@ def process_frame_to_potential(frame):
       - 2 hands → Square well (0 inside, 1 outside)
       - 1 hand → QHO-like parabola
     """
-    mp_hands = mp.solutions.hands
-    
-    with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5) as hands:
-        h, w, _ = frame.shape
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        res = hands.process(rgb)
+    try:
+        mp_hands = mp.solutions.hands
+        with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5) as hands:
+            h, w, _ = frame.shape
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            res = hands.process(rgb)
 
-        if not res.multi_hand_landmarks:
-            return None, "No Hands Detected, But Cute Smile :)"
+            if not res.multi_hand_landmarks:
+                return None, "No Hands Detected, But Cute Smile :)"
 
-        # --- LOGIC: Square Well vs QHO ---
-        
-        # 1. Square Well (2 Hands)
-        if len(res.multi_hand_landmarks) >= 2:
-            INDEX_TIP_ID = 8
-            x_coords = [lm.landmark[INDEX_TIP_ID].x * w for lm in res.multi_hand_landmarks]
-            x_coords.sort()
+            # --- LOGIC: Square Well vs QHO ---
             
-            xL_hand, xR_hand = x_coords[0], x_coords[1]
-            well_width = xR_hand - xL_hand
-            
-            center_screen = w / 2
-            centered_L = center_screen - (well_width / 2)
-            centered_R = center_screen + (well_width / 2)
-            
-            x_space = np.linspace(0, w, 400)
-            pot_profile = np.ones_like(x_space)
-            pot_profile[(x_space > centered_L) & (x_space < centered_R)] = 0
-            
-            return pot_profile, "Square Well (Captured)"
+            # 1. Square Well (2 Hands)
+            if len(res.multi_hand_landmarks) >= 2:
+                INDEX_TIP_ID = 8
+                x_coords = [lm.landmark[INDEX_TIP_ID].x * w for lm in res.multi_hand_landmarks]
+                x_coords.sort()
+                
+                xL_hand, xR_hand = x_coords[0], x_coords[1]
+                well_width = xR_hand - xL_hand
+                
+                center_screen = w / 2
+                centered_L = center_screen - (well_width / 2)
+                centered_R = center_screen + (well_width / 2)
+                
+                x_space = np.linspace(0, w, 400)
+                pot_profile = np.ones_like(x_space)
+                pot_profile[(x_space > centered_L) & (x_space < centered_R)] = 0
+                
+                return pot_profile, "Square Well (Captured)"
 
-        # 2. Harmonic Oscillator (1 Hand)
-        elif len(res.multi_hand_landmarks) == 1:
-            lm = res.multi_hand_landmarks[0]
-            THUMB = lm.landmark[4]
-            INDEX = lm.landmark[8]
-            
-            dx = INDEX.x - THUMB.x
-            dy = INDEX.y - THUMB.y
-            dist = math.sqrt(dx**2 + dy**2)
-            
-            # Map pinch distance → curvature
-            A = np.interp(dist, [0.05, 0.3], [100.0, 1.0]) 
-            
-            x_space = np.linspace(-1, 1, 400)
-            pot_profile = A * (x_space**2)
-            
-            pot_profile = np.clip(pot_profile, 0, 100)
-            pot_profile = pot_profile / 100.0  # normalize 0..1
-            
-            return pot_profile, f"Harmonic Oscillator (k={A:.1f})"
+            # 2. Harmonic Oscillator (1 Hand)
+            elif len(res.multi_hand_landmarks) == 1:
+                lm = res.multi_hand_landmarks[0]
+                THUMB = lm.landmark[4]
+                INDEX = lm.landmark[8]
+                
+                dx = INDEX.x - THUMB.x
+                dy = INDEX.y - THUMB.y
+                dist = math.sqrt(dx**2 + dy**2)
+                
+                # Map pinch distance → curvature
+                A = np.interp(dist, [0.05, 0.3], [100.0, 1.0]) 
+                
+                x_space = np.linspace(-1, 1, 400)
+                pot_profile = A * (x_space**2)
+                
+                pot_profile = np.clip(pot_profile, 0, 100)
+                pot_profile = pot_profile / 100.0  # normalize 0..1
+                
+                return pot_profile, f"Harmonic Oscillator (k={A:.1f})"
+                
+    except Exception as e:
+        return None, f"MediaPipe Error: {e}"
             
     return None, "Error"
 
