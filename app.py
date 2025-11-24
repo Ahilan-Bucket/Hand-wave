@@ -473,8 +473,19 @@ def kinetic_operator(N, dx, hbar=1, m=1):
     T = (-(hbar**2 / (2*m)) * D2)
     return T
         """, language="python")
-        st.success("Confirmed: Correct implementation of the Finite Difference Laplacian.")
-
+        st.code("""
+def harmonic(x,k,center=0.0):
+    # A Parabola, setting the global k-value.
+    global Last_k_value
+    Last_k_value = k
+    
+    constant_factor = 1 
+    potential = 0.5*k*(x - center)**2
+    return constant_factor * potential
+""")
+        
+        
+        
 # ==========================================
 # 6. PAGE: THEORY
 # ==========================================
