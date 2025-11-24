@@ -419,7 +419,7 @@ elif page == "Benchmarks & Verification":
     This solver has been rigorously tested against known analytical solutions and external libraries to ensure physical accuracy.
     """)
     
-    tab1, tab2, tab3 = st.tabs(["Analytical Benchmarks", "QMSolve Comparison", "Hamiltonian Check"])
+    tab1, tab2, tab3 = st.tabs(["Analytical Benchmarks", "QMSolve Comparison", "Code"])
     
     with tab1:
         st.subheader("1. Infinite Square Well")
