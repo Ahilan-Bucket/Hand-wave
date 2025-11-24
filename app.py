@@ -1,15 +1,4 @@
 import streamlit as st
-import numpy as np
-import matplotlib.pyplot as plt
-import mediapipe as mp
-import cv2
-import math
-import time
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-
-# Import physics engine
-import functions as f
 
 # ==========================================
 # 0. PAGE CONFIGURATION & STYLING
@@ -20,6 +9,27 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+import numpy as np
+import matplotlib.pyplot as plt
+import math
+import time
+
+try:
+    import mediapipe as mp
+    import cv2
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+except ImportError as e:
+    st.error(f"CRITICAL ERROR: Failed to import required libraries. {e}")
+    st.stop()
+
+# Import physics engine
+try:
+    import functions as f
+except ImportError as e:
+    st.error(f"CRITICAL ERROR: Failed to import physics engine. {e}")
+    st.stop()
 
 
 # ==========================================

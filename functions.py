@@ -2,8 +2,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-import cv2 # Kept for potential vision functions you might use later
-import mediapipe as mp # Kept for potential vision functions you might use later
+
 import math 
 from matplotlib.ticker import MultipleLocator 
 
