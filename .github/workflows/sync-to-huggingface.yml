@@ -1,0 +1,36 @@
+name: Sync to Hugging Face Space
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # Allows manual trigger from GitHub UI
+
+jobs:
+  sync-to-huggingface:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Fetch all history for proper sync
+          lfs: true       # Enable Git LFS if needed
+      
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git config --global user.email "ahilan.kumaresan@example.com"
+          git config --global user.name "Ahilan Kumaresan"
+          
+          # Add Hugging Face remote
+          git remote add hf https://AhiBucket:$HF_TOKEN@huggingface.co/spaces/AhiBucket/Hand-wave || true
+          
+          # Push to Hugging Face
+          git push hf main --force
+      
+      - name: Notify completion
+        run: |
+          echo "✅ Successfully synced to Hugging Face Space!"
+          echo "🌐 View at: https://huggingface.co/spaces/AhiBucket/Hand-wave"
