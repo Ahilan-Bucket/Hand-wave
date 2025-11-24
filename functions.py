@@ -595,3 +595,144 @@ def capture_potential(tune, A_MIN, A_MAX, mode='wait'):
     cv2.destroyAllWindows()
     return captured_V
 
+# Create a notebook-friendly version of the function
+def capture_potential_notebook(tune, A_MIN, A_MAX, mode='wait'):
+    import time
+    from IPython.display import display, Image, clear_output
+
+    
+    # Copy relevant constants from the file for local scope
+    THUMB_TIP_ID = 4
+    INDEX_TIP_ID = 8
+    REQUIRED_STABLE_FRAMES = 45
+    MOVEMENT_THRESHOLD = 0.015
+    PLOT_CEILING_A = 10.0
+    EPS = 1e-9
+    
+    D_MIN = 0.001
+    D_MAX = 0.2
+    D_RANGE = D_MAX - D_MIN
+    A_RANGE = A_MAX - A_MIN
+    SLOPE = -A_RANGE / D_RANGE
+    INTERCEPT = A_MAX - SLOPE * D_MIN
+    # End of copied constants
+    
+    cap = cv2.VideoCapture(0)
+    captured_V = None
+    
+    if not cap.isOpened():
+        print("Error: Could not open video stream. Check permissions or camera index.")
+        return None
+
+    stability_counter = 0
+    prev_landmarks = []
+    
+    start_time = time.time()
+    MAX_RUN_TIME_SECONDS = 30 
+    
+    print("Controls: HOLD STILL to capture, or wait for the time limit to exit.")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        frame = cv2.flip(frame, 1)
+        h, w, _ = frame.shape
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        res = hands.process(rgb)
+
+        pot_profile = None
+        mode_msg = "No Hands"
+        params_to_display = []
+        current_landmarks_flat = []
+
+        # --- LANDMARK AND POTENTIAL LOGIC (Skipped for brevity, assume this is correct) ---
+        if res.multi_hand_landmarks:
+            for hand_lms in res.multi_hand_landmarks:
+                for lm in hand_lms.landmark:
+                    current_landmarks_flat.extend([lm.x, lm.y])
+            for lm in res.multi_hand_landmarks:
+                drawer.draw_landmarks(frame, lm, mp_hands.HAND_CONNECTIONS)
+            
+            # TWO HANDS (Square Well)
+            if len(res.multi_hand_landmarks) >= 2:
+                mode_msg = "Mode: Square Well (Auto-Centered)"
+                x_coords = [lm.landmark[INDEX_TIP_ID].x * w for lm in res.multi_hand_landmarks]
+                x_coords.sort()
+                xL_hand, xR_hand = int(x_coords[0]), int(x_coords[1])
+                cv2.line(frame, (xL_hand, 0), (xL_hand, h), (0, 255, 255), 2)
+                cv2.line(frame, (xR_hand, 0), (xR_hand, h), (0, 255, 255), 2)
+                well_width = xR_hand - xL_hand
+                center_screen = w / 2
+                centered_L = center_screen - (well_width / 2)
+                centered_R = center_screen + (well_width / 2)
+                params_to_display.append(f"Width: {well_width:4.0f} px")
+                params_to_display.append(f"Status: Centered")
+                x_space = np.linspace(0, w, 400)
+                pot_profile = np.ones_like(x_space)
+                pot_profile[(x_space > centered_L) & (x_space < centered_R)] = 0
+            # ONE HAND (QHO)
+            elif len(res.multi_hand_landmarks) == 1:
+                mode_msg = "Mode: Pinch QHO"
+                lm = res.multi_hand_landmarks[0]
+                thumb = lm.landmark[THUMB_TIP_ID]
+                index = lm.landmark[INDEX_TIP_ID]
+                dx = index.x - thumb.x
+                dy = index.y - thumb.y
+                pinch_distance = math.sqrt(dx**2 + dy**2)
+                A = SLOPE * pinch_distance + INTERCEPT
+                A = max(A_MIN, min(A_MAX, A))
+                x_space = np.linspace(-1, 1, 400)
+                pot_profile = A * (x_space**2)
+                pot_profile = pot_profile / (PLOT_CEILING_A + EPS)
+                pot_profile = np.clip(pot_profile, 0.0, 1.0)
+                params_to_display.append(f"Pinch Dist: {pinch_distance:.4f}")
+                params_to_display.append(f"A (curv): {A:.4f}")
+                display_pts = np.column_stack(((x_space + 1)/2 * w, (1 - pot_profile) * h)).astype(np.int32)
+                cv2.polylines(frame, [display_pts], False, (0, 0, 255), 2)
+        # --- END LANDMARK AND POTENTIAL LOGIC ---
+
+        # STABILITY CHECK
+        if mode != 'wait':
+            if current_landmarks_flat and prev_landmarks and len(current_landmarks_flat) == len(prev_landmarks):
+                movement = np.mean(np.abs(np.array(current_landmarks_flat) - np.array(prev_landmarks)))
+                stability_counter = stability_counter + 1 if movement < MOVEMENT_THRESHOLD else 0
+            else:
+                stability_counter = 0
+
+            prev_landmarks = current_landmarks_flat
+
+            if stability_counter > 0:
+                progress = stability_counter / REQUIRED_STABLE_FRAMES
+                bar_width = int(w * progress)
+                color = (0, 255*progress, 255*(1-progress))
+                cv2.rectangle(frame, (0, 0), (bar_width, 20), color, -1)
+                cv2.putText(frame, "HOLDING...", (10, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
+            # Finished
+            if stability_counter >= REQUIRED_STABLE_FRAMES and pot_profile is not None:
+                captured_V = pot_profile
+                cap.release()
+                # --- LINE REMOVED HERE (was cv2.destroyAllWindows()) ---
+                print("Stable capture triggered and video stream closed.")
+                return captured_V
+
+        # UI OVERLAY
+        cv2.putText(frame, mode_msg, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        display_params(frame, params_to_display)
+        
+        # NOTEBOOK DISPLAY
+        clear_output(wait=True) 
+        _, buffer = cv2.imencode('.jpeg', frame)
+        display(Image(data=buffer.tobytes()))
+        
+        time.sleep(0.01)
+
+        if time.time() - start_time > MAX_RUN_TIME_SECONDS:
+            print(f"Time limit of {MAX_RUN_TIME_SECONDS} seconds reached.")
+            break
+
+    # -----------------------------------------------------------------
+    cap.release()
+    return captured_V
