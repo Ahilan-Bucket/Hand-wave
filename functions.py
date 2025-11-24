@@ -21,10 +21,35 @@ global Last_k_value # Used by harmonic() and check_harmonic_analytic()
 # ==========================================
 def make_grid(L=L, N=N_GRID):
     """
-    Returns:
-        x_full: N+2 points from -L/2 to L/2 (including 'walls')
-        dx: grid spacing
-        x_internal: internal N points (where we solve)
+    Create a spatial grid for solving the Schrödinger equation.
+    
+    Parameters
+    ----------
+    L : float, optional
+        Total length of the spatial domain (default: 50 a.u.)
+    N : int, optional
+        Number of internal grid points (default: 2000)
+    
+    Returns
+    -------
+    x_full : ndarray
+        Full grid with N+2 points from -L/2 to L/2, including boundary points
+    dx : float
+        Grid spacing (distance between adjacent points)
+    x_internal : ndarray
+        Internal grid points (N points) where the wavefunction is solved
+        Excludes the boundary points at x[0] and x[-1]
+    
+    Notes
+    -----
+    The boundary points are used to enforce boundary conditions (typically ψ=0)
+    while x_internal contains the points where we actually solve for ψ.
+    
+    Examples
+    --------
+    >>> x, dx, x_int = make_grid(L=20, N=1000)
+    >>> print(f"Domain: [{x[0]:.1f}, {x[-1]:.1f}], spacing: {dx:.4f}")
+    Domain: [-10.0, 10.0], spacing: 0.0200
     """
     x = np.linspace(-L/2, L/2, N+2)
     dx = x[1] - x[0]
@@ -34,53 +59,261 @@ def make_grid(L=L, N=N_GRID):
 # ==========================================
 # 3. POTENTIAL GENERATORS (V(x))
 # ==========================================
-def constant(x,c):
-    """Adds a flat baseline potential."""
-    return np.ones_like(x)*c
+def constant(x, c):
+    """
+    Create a constant potential across the entire domain.
+    
+    Parameters
+    ----------
+    x : ndarray
+        Spatial grid points
+    c : float
+        Constant potential value (in Hartree atomic units)
+    
+    Returns
+    -------
+    V : ndarray
+        Constant potential array of same shape as x, with value c everywhere
+    
+    Examples
+    --------
+    >>> x = np.linspace(-10, 10, 100)
+    >>> V = constant(x, 5.0)  # V(x) = 5.0 everywhere
+    """
+    return np.ones_like(x) * c
 
-def harmonic(x,k,center=0.0):
-    """A Parabola, setting the global k-value."""
+def harmonic(x, k, center=0.0):
+    """
+    Create a harmonic oscillator (parabolic) potential.
+    
+    Generates V(x) = (1/2)k(x - center)² representing a quantum harmonic
+    oscillator potential centered at the specified position.
+    
+    Parameters
+    ----------
+    x : ndarray
+        Spatial grid points
+    k : float
+        Spring constant (curvature parameter) in atomic units
+        Larger k → stiffer spring → more tightly bound states
+    center : float, optional
+        Center position of the parabola (default: 0.0)
+    
+    Returns
+    -------
+    V : ndarray
+        Harmonic potential array: V(x) = 0.5 * k * (x - center)²
+    
+    Notes
+    -----
+    - Sets global variable Last_k_value for use by check_harmonic_analytic()
+    - Energy levels: E_n = ℏω(n + 1/2) where ω = √(k/m)
+    - In atomic units (ℏ=1, m=1): ω = √k
+    
+    Examples
+    --------
+    >>> x = np.linspace(-10, 10, 1000)
+    >>> V = harmonic(x, k=1.0, center=0.0)  # Standard QHO
+    >>> V_stiff = harmonic(x, k=10.0, center=0.0)  # Stiffer spring
+    >>> V_offset = harmonic(x, k=1.0, center=5.0)  # Centered at x=5
+    """
     global Last_k_value
     Last_k_value = k
     
     constant_factor = 1 
-    potential = 0.5*k*(x - center)**2
+    potential = 0.5 * k * (x - center)**2
     return constant_factor * potential
 
 def gaussian_well(x, center=0.0, width=1.0, depth=50): 
-    """A dip in the potential (finite well)."""
+    """
+    Create a Gaussian-shaped potential well.
+    
+    Generates a smooth, bell-shaped potential dip that can trap particles.
+    
+    Parameters
+    ----------
+    x : ndarray
+        Spatial grid points
+    center : float, optional
+        Center position of the well (default: 0.0)
+    width : float, optional
+        Width parameter (standard deviation) of the Gaussian (default: 1.0)
+        Larger width → broader well
+    depth : float, optional
+        Depth of the well at the center (default: 50)
+        Positive depth creates a well (attractive potential)
+    
+    Returns
+    -------
+    V : ndarray
+        Gaussian well potential: V(x) = -depth * exp(-(x-center)²/(2*width²))
+    
+    Notes
+    -----
+    - Minimum potential is -depth at x = center
+    - Potential approaches 0 as |x - center| → ∞
+    - Smooth potential (infinitely differentiable)
+    
+    Examples
+    --------
+    >>> x = np.linspace(-10, 10, 1000)
+    >>> V = gaussian_well(x, center=0, width=2.0, depth=10)
+    """
     return -depth * np.exp(-(x - center)**2 / (2 * width**2))
 
-def inf_sqaure_well(x,lower_bound,upper_bound):
-    """Gives you an Infinite square well of Length L"""
+def inf_sqaure_well(x, lower_bound, upper_bound):
+    """
+    Create an infinite square well (particle in a box) potential.
+    
+    Parameters
+    ----------
+    x : ndarray
+        Spatial grid points
+    lower_bound : float
+        Left boundary of the well
+    upper_bound : float
+        Right boundary of the well
+    
+    Returns
+    -------
+    V : ndarray
+        Infinite square well potential:
+        - V(x) = 0 for lower_bound ≤ x ≤ upper_bound (inside well)
+        - V(x) = 10¹⁰ for x < lower_bound or x > upper_bound (outside well)
+    
+    Notes
+    -----
+    - Uses penalty method: "infinite" walls are approximated by very large
+      potential (10¹⁰) to enforce ψ ≈ 0 outside the well
+    - Well width: L = upper_bound - lower_bound
+    - Analytical energies: E_n = (ℏ²π²n²)/(2mL²) for n = 1, 2, 3, ...
+    
+    Examples
+    --------
+    >>> x = np.linspace(-15, 15, 1000)
+    >>> V = inf_sqaure_well(x, lower_bound=-10, upper_bound=10)  # L = 20
+    >>> # Use with check_ISW_analytic(E, lower_bound=-10, upper_bound=10)
+    """
     HUGE_NUMBER = 1e10
     V = np.zeros_like(x) 
-    V[x<lower_bound] = HUGE_NUMBER
-    V[x>upper_bound] = HUGE_NUMBER
+    V[x < lower_bound] = HUGE_NUMBER
+    V[x > upper_bound] = HUGE_NUMBER
     return V
 
-def inf_wall(x,side,bound):
-    """Places an 'Infinite' wall (Penalty Method)."""
+def inf_wall(x, side, bound):
+    """
+    Place an infinite potential wall on one side of the domain.
+    
+    Parameters
+    ----------
+    x : ndarray
+        Spatial grid points
+    side : str
+        Which side to place the wall: 'left' or 'right'
+        (case-insensitive, strips whitespace and punctuation)
+    bound : float
+        Position of the wall boundary
+    
+    Returns
+    -------
+    V : ndarray
+        Potential with infinite wall:
+        - If side='left': V(x) = 10¹⁰ for x < bound, V(x) = 0 for x ≥ bound
+        - If side='right': V(x) = 10¹⁰ for x > bound, V(x) = 0 for x ≤ bound
+    
+    Notes
+    -----
+    Uses penalty method with V = 9×10¹⁰ to approximate infinite potential.
+    
+    Examples
+    --------
+    >>> x = np.linspace(-10, 10, 1000)
+    >>> V_left = inf_wall(x, 'left', bound=-5)  # Wall at x=-5, blocks left side
+    >>> V_right = inf_wall(x, 'right', bound=5)  # Wall at x=5, blocks right side
+    """
     V = np.zeros_like(x)
     HUGE_NUMBER = 9e10 
     side = side.strip(', . ').lower() 
 
-    if side =='left':
-        V[x<bound] = HUGE_NUMBER
-    elif side =='right':
-        V[x>bound] = HUGE_NUMBER
+    if side == 'left':
+        V[x < bound] = HUGE_NUMBER
+    elif side == 'right':
+        V[x > bound] = HUGE_NUMBER
     return V
 
 def finite_barrier(x, center, width, height):
-    """A square block in the middle."""
+    """
+    Create a finite rectangular potential barrier.
+    
+    Parameters
+    ----------
+    x : ndarray
+        Spatial grid points
+    center : float
+        Center position of the barrier
+    width : float
+        Total width of the barrier
+    height : float
+        Height of the potential barrier
+    
+    Returns
+    -------
+    V : ndarray
+        Rectangular barrier potential:
+        - V(x) = height for |x - center| < width/2
+        - V(x) = 0 elsewhere
+    
+    Notes
+    -----
+    Useful for studying quantum tunneling phenomena. Particles with E < height
+    can tunnel through the barrier with exponentially decaying probability.
+    
+    Examples
+    --------
+    >>> x = np.linspace(-10, 10, 1000)
+    >>> V = finite_barrier(x, center=0, width=2, height=5)  # Barrier from x=-1 to x=1
+    """
     V = np.zeros_like(x)
     mask = (x > (center - width/2)) & (x < (center + width/2))
     V[mask] = height
     return V
 
-def V_double_well(x, depth=20, separation=1,center=0.0):
-    """Quartic double well potential."""
-    V = depth * ( (x-center)**2 - separation )**2
+def V_double_well(x, depth=20, separation=1, center=0.0):
+    """
+    Create a quartic double-well potential.
+    
+    Generates V(x) = depth × ((x-center)² - separation)² which has two minima
+    separated by a central barrier.
+    
+    Parameters
+    ----------
+    x : ndarray
+        Spatial grid points
+    depth : float, optional
+        Depth parameter controlling overall potential strength (default: 20)
+    separation : float, optional
+        Controls the distance between the two wells (default: 1)
+        Well minima are approximately at x = center ± separation
+    center : float, optional
+        Center position of the double well system (default: 0.0)
+    
+    Returns
+    -------
+    V : ndarray
+        Double well potential: V(x) = depth × ((x-center)² - separation)²
+    
+    Notes
+    -----
+    - Creates symmetric double well with barrier at x = center
+    - Useful for studying tunneling splitting and symmetric/antisymmetric states
+    - Ground state and first excited state form tunneling doublet
+    
+    Examples
+    --------
+    >>> x = np.linspace(-5, 5, 1000)
+    >>> V = V_double_well(x, depth=2, separation=1, center=0)
+    """
+    V = depth * ((x - center)**2 - separation)**2
     return V
 
 def custom2(value,x):
@@ -90,8 +323,47 @@ def custom2(value,x):
 # In psi_solve2/functions.py
 
 def finite_square_well(x, lower_bound, upper_bound, depth_V):
-    """A finite square well of a specific depth_V (height of the walls)."""
+    """
+    Create a finite square well potential.
     
+    The potential is zero inside the well and has finite height depth_V outside.
+    Unlike the infinite square well, particles can exist in the barrier region
+    with exponentially decaying wavefunctions.
+    
+    Parameters
+    ----------
+    x : ndarray
+        Spatial grid points
+    lower_bound : float
+        Left boundary of the well
+    upper_bound : float
+        Right boundary of the well
+    depth_V : float
+        Height of the potential barriers outside the well (V₀)
+    
+    Returns
+    -------
+    V : ndarray
+        Finite square well potential:
+        - V(x) = 0 for lower_bound ≤ x ≤ upper_bound (inside well)
+        - V(x) = depth_V for x < lower_bound or x > upper_bound (barrier regions)
+    
+    """
+    """    
+    Notes
+    -----
+    - Bound states exist only when E < depth_V
+    - Number of bound states depends on well width and depth_V
+    - For bound states, wavefunction decays exponentially in barrier (E < V)
+    - For scattering states (E > depth_V), wavefunction oscillates everywhere
+    - Use check_finite_well_analytic() to verify numerical results
+    
+    Examples
+    --------
+    >>> x = np.linspace(-15, 15, 1000)
+    >>> V_deep = finite_square_well(x, -10, 10, depth_V=2.0)  # Deep well, many bound states
+    >>> V_shallow = finite_square_well(x, -10, 10, depth_V=0.01)  # Shallow, few/no bound states
+    """
     # Start with a baseline of zero potential
     V = np.zeros_like(x) 
     
@@ -105,18 +377,119 @@ def finite_square_well(x, lower_bound, upper_bound, depth_V):
 # ==========================================
 # 4. SCHRÖDINGER EQUATION SOLVER
 # ==========================================
-def kinetic_operator(N, dx, hbar=hbar,m=m):
-    """Builds the Kinetic Energy Matrix (N x N) using finite difference."""
-    main_diagonal = (1/dx**2)*np.diag(-2*np.ones(N))
-    off_diagonal1 = (1/dx**2)*np.diag(np.ones(N-1),-1)
-    off_diagonal2 = (1/dx**2)*np.diag(np.ones(N-1),1)
+def kinetic_operator(N, dx, hbar=hbar, m=m):
+    """
+    Build the kinetic energy operator matrix using finite difference method.
+    
+    Constructs the discrete representation of the kinetic energy operator
+    T = -(ℏ²/2m) d²/dx² using a 3-point central difference stencil.
+    
+    Parameters
+    ----------
+    N : int
+        Number of internal grid points (size of the matrix)
+    dx : float
+        Grid spacing (distance between adjacent points)
+    hbar : float, optional
+        Reduced Planck constant (default: 1.0 in atomic units)
+    m : float, optional
+        Particle mass (default: 1.0 in atomic units)
+    
+    Returns
+    -------
+    T : ndarray, shape (N, N)
+        Kinetic energy operator matrix (symmetric, tridiagonal)
+        - Diagonal elements: -(ℏ²/2m) × (-2/dx²)
+        - Off-diagonal elements: -(ℏ²/2m) × (1/dx²)
+    
+    """
+    """    
+    Notes
+    -----
+    The second derivative is approximated using central differences:
+        d²ψ/dx² ≈ (ψ_{i+1} - 2ψ_i + ψ_{i-1}) / dx²
+    
+    This creates a tridiagonal matrix:
+        - Main diagonal: -2/dx²
+        - Upper/lower diagonals: +1/dx²
+    
+    The kinetic energy operator is then: T = -(ℏ²/2m) × D2
+    
+    Examples
+    --------
+    >>> N = 1000
+    >>> dx = 0.025
+    >>> T = kinetic_operator(N, dx)
+    >>> print(f"Matrix shape: {T.shape}, Symmetric: {np.allclose(T, T.T)}")
+    Matrix shape: (1000, 1000), Symmetric: True
+    """
+    main_diagonal = (1/dx**2) * np.diag(-2 * np.ones(N))
+    off_diagonal1 = (1/dx**2) * np.diag(np.ones(N-1), -1)
+    off_diagonal2 = (1/dx**2) * np.diag(np.ones(N-1), 1)
     D2 = (main_diagonal + off_diagonal1 + off_diagonal2)
 
-    T = (-(hbar**2/(2*m) ) * D2 )
+    T = (-(hbar**2 / (2*m)) * D2)
     return T
 
-def solve(T,V_full,dx):
-    """Solves H psi = E psi (Eigenvalue problem)."""
+def solve(T, V_full, dx):
+    """
+    Solve the time-independent Schrödinger equation for eigenvalues and eigenvectors.
+    
+    Solves the eigenvalue problem Hψ = Eψ where H = T + V is the Hamiltonian.
+    Returns normalized eigenstates sorted by energy.
+    
+    Parameters
+    ----------
+    T : ndarray, shape (N, N)
+        Kinetic energy operator matrix from kinetic_operator()
+    V_full : ndarray, shape (N+2,)
+        Full potential array including boundary points
+        V_full[0] and V_full[-1] are boundary values (typically very large)
+        V_full[1:-1] are the internal potential values
+    dx : float
+        Grid spacing used for normalization
+    
+    Returns
+    -------
+    E : ndarray, shape (N,)
+        Eigenvalues (energy levels) sorted in ascending order
+        Units: Hartree (atomic units)
+    psi : ndarray, shape (N, N)
+        Eigenvectors (wavefunctions) as columns
+        psi[:, i] is the wavefunction for energy E[i]
+        Each wavefunction is normalized: ∫|ψ|² dx = 1
+    
+    """
+    """    
+    Notes
+    -----
+    - Uses np.linalg.eigh() which assumes Hermitian matrix (guaranteed for H)
+    - Automatically sorts eigenvalues and eigenvectors by energy
+    - Normalizes each eigenstate using trapezoidal rule: ∫|ψ|² dx = 1
+    - Boundary conditions are enforced by V_full having large values at edges
+    
+    The Hamiltonian is constructed as:
+        H = T + diag(V_internal)
+    where V_internal = V_full[1:-1]
+    
+    Examples
+    --------
+    >>> # Setup
+    >>> x, dx, x_int = make_grid(L=20, N=1000)
+    >>> T = kinetic_operator(len(x_int), dx)
+    >>> 
+    >>> # Create infinite square well
+    >>> V = inf_sqaure_well(x_int, -10, 10)
+    >>> V_full = np.pad(V, (1,1), constant_values=1e10)
+    >>> 
+    >>> # Solve
+    >>> E, psi = solve(T, V_full, dx)
+    >>> print(f"Ground state energy: {E[0]:.6f} Ha")
+    >>> 
+    >>> # Verify normalization
+    >>> norm = np.sum(psi[:, 0]**2) * dx
+    >>> print(f"Normalization: {norm:.6f}")  # Should be 1.0
+    """
     V_internal = V_full[1:-1]
     H = T + np.diag(V_internal)
 
@@ -135,7 +508,37 @@ def solve(T,V_full,dx):
 # 5. PLOTTING FUNCTIONS (STREAMLIT/JUPYTER SAFE)
 # ==========================================
 def plot_V(V_raw_input):
-    """Returns a figure showing a 1D potential profile."""
+    """
+    Plot a 1D potential profile.
+    
+    Creates a simple matplotlib figure showing the potential energy landscape.
+    
+    Parameters
+    ----------
+    V_raw_input : ndarray or None
+        1D array representing the potential V(x)
+        If None or scalar, returns None
+    
+    Returns
+    -------
+    fig : matplotlib.figure.Figure or None
+        Figure object containing the potential plot
+        Returns None if input is invalid
+    """
+    """    
+    Notes
+    -----
+    - Uses dark background style
+    - Cyan color for potential curve
+    - Useful for quick visualization of potential shapes
+    
+    Examples
+    --------
+    >>> x = np.linspace(-10, 10, 1000)
+    >>> V = harmonic(x, k=1.0)
+    >>> fig = plot_V(V)
+    >>> plt.show()
+    """
     if V_raw_input is None or np.ndim(V_raw_input) == 0:
         return None
 
@@ -149,13 +552,60 @@ def plot_V(V_raw_input):
     return fig
 
 
-def plot_alive(E, psi, V, x, no = 1,nos=5,mode=''):
+def plot_alive(E, psi, V, x, no=1, nos=5, mode=''):
     """
-    Physically accurate plot:
-    - |psi|^2 has its own scale on right y-axis
-    - Potential & energy use left y-axis
+    Plot wavefunctions as probability densities with separate energy and probability axes.
     
-    UPDATED: Colors synchronized between probability density and energy line.
+    Creates a physically accurate plot showing:
+    - Potential V(x) and energy levels on left y-axis
+    - Probability densities |ψ|² on right y-axis (separate scale)
+    - Color-synchronized between probability curves and energy levels
+    
+    Parameters
+    ----------
+    E : ndarray
+        Energy eigenvalues (in Hartree)
+    psi : ndarray, shape (N, M)
+        Wavefunction array where psi[:, i] is the i-th eigenstate
+    V : ndarray, shape (N+2,)
+        Full potential array including boundaries
+    x : ndarray, shape (N+2,)
+        Full spatial grid including boundaries
+    no : int, optional
+        State index to plot if mode != 'all' (default: 1)
+    nos : int, optional
+        Number of states to plot if mode == 'all' (default: 5)
+    mode : str, optional
+        Plot mode:
+        - 'all': Plot multiple states (first nos states)
+        - '': Plot single state (state no)
+        Default: '' (single state)
+    
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object with dual y-axes
+        - ax1 (left): Energy/Potential scale
+        - ax2 (right): Probability density scale
+    
+    Notes
+    -----
+    - Uses dark background theme
+    - Probability densities are plotted as |ψ|², not ψ
+    - Each state has matching colors for its probability curve and energy level
+    - Regions where V > 10⁵ are hidden (infinite walls)
+    
+    """
+    """    
+    Examples
+    --------
+    >>> # Plot first 5 states
+    >>> fig = plot_alive(E, psi, V_full, x_full, nos=5, mode='all')
+    >>> plt.show()
+    >>> 
+    >>> # Plot only ground state
+    >>> fig = plot_alive(E, psi, V_full, x_full, no=0)
+    >>> plt.show()
     """
     import matplotlib.pyplot as plt
     
@@ -313,17 +763,42 @@ def show_matrix(overlap_matrix,how='normal',round_value=10):
         plt.locator_params(axis='x', integer=True)
         plt.show()
 
-def check_ISW_analytic(E,L,hbar=1.0, m=1.0, max_levels=6):
-    """Compares numerical energies to the Infinite Square Well analytic formula."""
-    CHECK_N = max_levels
+def check_ISW_analytic(E, lower_bound=-10, upper_bound=10, hbar=1.0, m=1.0, max_levels=6):
+    """
+    Compares numerical energies to the Infinite Square Well analytic formula.
+    
+    Parameters:
+    -----------
+    E : array
+        Numerical eigenvalues
+    lower_bound : float
+        Lower boundary of the well (default: -10)
+    upper_bound : float
+        Upper boundary of the well (default: 10)
+    hbar : float
+        Reduced Planck constant (default: 1.0)
+    m : float
+        Particle mass (default: 1.0)
+    max_levels : int
+        Number of levels to check (default: 6)
+
+    """
+    """            
+    Example:
+    --------
+    check_ISW_analytic(E, lower_bound=-10, upper_bound=10)
+    """
+    L = upper_bound - lower_bound  # Well width
+    CHECK_N = min(max_levels, len(E))
     E_numerical = E[:CHECK_N]
-    E_analytic = np.zeros(CHECK_N) # Changed to CHECK_N size for correct indexing
+    E_analytic = np.zeros(CHECK_N)
 
     for i in range(CHECK_N):
         n = i + 1 
-        E_analytic[i] = (hbar**2 * np.pi**2 * n**2 ) / (2*m*L**2)
+        E_analytic[i] = (hbar**2 * np.pi**2 * n**2) / (2*m*L**2)
 
     print("\n### ENERGY BENCHMARK: Infinite Square Well ###")
+    print(f"Well boundaries: x = [{lower_bound}, {upper_bound}], Width L = {L}")
     print("-" * 55)
     print(f"| n | Analytic E | Numerical E | % Error |")
     print("-" * 55)
@@ -334,15 +809,41 @@ def check_ISW_analytic(E,L,hbar=1.0, m=1.0, max_levels=6):
             f"| {i+1:<1} | {E_analytic[i]:<10.6f} | {E_numerical[i]:<11.6f} | {percent_error:<7.4f}% |"
         )
     print("-" * 55)
+    
+    return E_analytic, E_numerical
 
-def check_harmonic_analytic(E, hbar=1.0, m=1.0, max_levels=6):
-    """Compares numerical energies to the Harmonic Oscillator analytic formula."""
-    CHECK_N = max_levels
+def check_harmonic_analytic(E, k=None, center=0.0, hbar=1.0, m=1.0, max_levels=6):
+    """
+    Compares numerical energies to the Harmonic Oscillator analytic formula.
+    
+    Parameters:
+    -----------
+    E : array
+        Numerical eigenvalues
+    k : float, optional
+        Spring constant. If None, uses Last_k_value global variable
+    center : float
+        Center position of the harmonic oscillator (default: 0.0)
+    hbar : float
+        Reduced Planck constant (default: 1.0)
+    m : float
+        Particle mass (default: 1.0)
+    max_levels : int
+        Number of levels to check (default: 6)
+    
+    Example:
+    --------
+    check_harmonic_analytic(E, k=10, center=0)
+    """
+    CHECK_N = min(max_levels, len(E))
+    
     try: 
-        k = Last_k_value 
+        # Use provided k or fall back to global Last_k_value
         if k is None:
-            print("ERROR: k is not set. Run a harmonic potential first.")
-            return
+            k = Last_k_value 
+            if k is None:
+                print("ERROR: k is not set. Please provide k parameter or run harmonic() first.")
+                return
         
         w = np.sqrt(k/m)
         E_numerical = E[:CHECK_N]
@@ -350,9 +851,10 @@ def check_harmonic_analytic(E, hbar=1.0, m=1.0, max_levels=6):
 
         for i in range(CHECK_N):
             n_quantum = i 
-            E_analytic[i] = (n_quantum + 0.5 ) * hbar * w
+            E_analytic[i] = (n_quantum + 0.5) * hbar * w
 
         print("\n### ENERGY BENCHMARK: Harmonic Oscillator ###")
+        print(f"Spring constant k = {k}, Center = {center}, omega = {w:.4f}")
         print("-" * 55)
         print(f"| n | Analytic E | Numerical E | % Error |") 
         print("-" * 55)
@@ -365,9 +867,115 @@ def check_harmonic_analytic(E, hbar=1.0, m=1.0, max_levels=6):
                 f"| {n_label:<1} | {E_analytic[i]:<10.6f} | {E_numerical[i]:<11.6f} | {percent_error:<7.4f}% |"
             )
         print("-" * 55)
+        
+        return E_analytic, E_numerical
 
     except Exception as e:
-        print(f"I don't think this is a Harmonic Oscillator, or an error occurred: {e}")
+        print(f"Error in harmonic oscillator check: {e}")
+
+
+def check_finite_well_analytic(E, V0, lower_bound=-10, upper_bound=10, hbar=1.0, m=1.0, max_levels=10):
+    """
+    Compares numerical energies to the Finite Square Well analytical solution.
+    
+    The finite square well has no simple closed-form solution, but bound state
+    energies can be found by solving transcendental equations numerically.
+    
+    Parameters:
+    -----------
+    E : array
+        Numerical eigenvalues from your solver
+    V0 : float
+        Barrier height (potential outside the well)
+    lower_bound : float
+        Lower boundary of the well (default: -10)
+    upper_bound : float
+        Upper boundary of the well (default: 10)
+    hbar : float
+        Reduced Planck constant (default: 1.0)
+    m : float
+        Particle mass (default: 1.0)
+    max_levels : int
+        Maximum number of levels to check (default: 10)
+    
+    Example:
+    --------
+    check_finite_well_analytic(E, V0=2.0, lower_bound=-10, upper_bound=10)
+    """
+    a = (upper_bound - lower_bound) / 2  # Half-width
+    z0 = a * np.sqrt(2 * m * V0) / hbar  # Dimensionless parameter
+    
+    # Find analytical energies by solving transcendental equations
+    E_analytic = []
+    
+    # Even parity states: z*tan(z) = sqrt(z0^2 - z^2)
+    z_vals = np.linspace(0.01, z0 - 0.01, 10000)
+    for n in range(max_levels):
+        try:
+            lhs = z_vals * np.tan(z_vals)
+            rhs = np.sqrt(z0**2 - z_vals**2)
+            diff = lhs - rhs
+            
+            # Find sign changes (crossings)
+            for i in range(len(diff) - 1):
+                if diff[i] * diff[i+1] < 0:
+                    z = z_vals[i]
+                    E_candidate = (hbar**2 * z**2) / (2 * m * a**2)
+                    if E_candidate < V0 and not any(np.isclose(E_candidate, E_a, rtol=1e-3) for E_a in E_analytic):
+                        E_analytic.append(E_candidate)
+                        break
+        except:
+            pass
+    
+    # Odd parity states: -z*cot(z) = sqrt(z0^2 - z^2)
+    for n in range(max_levels):
+        try:
+            lhs = -z_vals / np.tan(z_vals)
+            rhs = np.sqrt(z0**2 - z_vals**2)
+            diff = lhs - rhs
+            
+            for i in range(len(diff) - 1):
+                if diff[i] * diff[i+1] < 0:
+                    z = z_vals[i]
+                    E_candidate = (hbar**2 * z**2) / (2 * m * a**2)
+                    if E_candidate < V0 and not any(np.isclose(E_candidate, E_a, rtol=1e-3) for E_a in E_analytic):
+                        E_analytic.append(E_candidate)
+                        break
+        except:
+            pass
+    
+    E_analytic = sorted(E_analytic)
+    
+    # Filter numerical energies to only bound states
+    E_numerical_bound = E[E < V0]
+    
+    CHECK_N = min(len(E_analytic), len(E_numerical_bound), max_levels)
+    
+    if CHECK_N == 0:
+        print("\n### ENERGY BENCHMARK: Finite Square Well ###")
+        print(f"Well: x in [{lower_bound}, {upper_bound}], V0 = {V0}, z0 = {z0:.4f}")
+        print("WARNING: No bound states found!")
+        print(f"  Barrier too shallow. Need V0 > {E[0]:.4f} to bind the ground state.")
+        return None, None
+    
+    print("\n### ENERGY BENCHMARK: Finite Square Well ###")
+    print(f"Well: x in [{lower_bound}, {upper_bound}], V0 = {V0}, z0 = {z0:.4f}")
+    print(f"Number of bound states: {CHECK_N}")
+    print("-" * 55)
+    print(f"| n | Analytic E | Numerical E | % Error |")
+    print("-" * 55)
+    
+    for i in range(CHECK_N):
+        percent_error = np.abs((E_numerical_bound[i] - E_analytic[i]) / E_analytic[i]) * 100
+        print(
+            f"| {i:<1} | {E_analytic[i]:<10.6f} | {E_numerical_bound[i]:<11.6f} | {percent_error:<7.4f}% |"
+        )
+    print("-" * 55)
+    
+    return np.array(E_analytic[:CHECK_N]), E_numerical_bound[:CHECK_N]
+
+
+
 
 
 
@@ -736,3 +1344,39 @@ def capture_potential_notebook(tune, A_MIN, A_MAX, mode='wait'):
     # -----------------------------------------------------------------
     cap.release()
     return captured_V
+
+
+
+
+
+###
+import qrcode
+from IPython.display import display, Image
+
+def show_QR(url):
+    # The file name to save the QR code image
+    file_name = "hand_wave_link_qrcode.png"
+
+    # --- QR Code Generation ---
+    # 1. Create a QR code object with specific settings
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=4,
+    )
+
+    # 2. Add the URL data to the object
+    qr.add_data(url)
+    qr.make(fit=True)
+
+    # 3. Create the QR code image
+    img = qr.make_image(fill_color="black", back_color="white")
+
+    # 4. Save the image to the local directory
+    img.save(file_name)
+
+    # --- Display in Jupyter Notebook ---
+
+    # 5. Display the saved image using IPython.display
+    return display(Image(filename=file_name))
