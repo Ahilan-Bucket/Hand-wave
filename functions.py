@@ -1678,6 +1678,7 @@ def run_verification():
 
 
 def display_params(frame, params_list, start_y=80, line_height=25, color=(255, 255, 255)):
+    import cv2
     for i, text in enumerate(params_list):
         y = start_y + i * line_height
         cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX,
@@ -1693,12 +1694,16 @@ def display_params(frame, params_list, start_y=80, line_height=25, color=(255, 2
 # ---------------------------------------------------------------------
 # INITIALIZATION
 # ---------------------------------------------------------------------
-mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.7)
-drawer = mp.solutions.drawing_utils
+
 
 
 def capture_potential(tune, A_MIN, A_MAX, mode='wait'):
+    import cv2
+    import mediapipe as mp
+    
+    mp_hands = mp.solutions.hands
+    hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.7)
+    drawer = mp.solutions.drawing_utils
 
     cap = cv2.VideoCapture(0)
     captured_V = None
