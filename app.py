@@ -70,6 +70,7 @@ st.markdown("""
 # ==========================================
 with st.sidebar:
     st.title("Quantum Solver 2.0")
+    st.caption("v2.1 - HF Fix")
     st.markdown("---")
     
     # Navigation
