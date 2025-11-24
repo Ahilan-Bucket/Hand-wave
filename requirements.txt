@@ -4,3 +4,5 @@ matplotlib
 opencv-python-headless
 mediapipe
 plotly
+qmsolve
+scipy
