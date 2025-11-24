@@ -100,34 +100,35 @@ def plot_interactive(E, psi, V, x, nos=5):
 
     # Scaling factor for wavefunctions
     if len(E) >= 2:
-        scale = (E[1] - E[0]) * 0.5
+        scale = (E[1] - E[0]) * 0.4
     else:
-        scale = 1.0
+        scale = max(E[0] * 0.1, 0.5)
         
     max_E = E[states-1] if states > 0 else 10
     window_height = max_E * 1.5
 
-    # 1. Plot Potential V(x)
-    V_clipped = np.clip(V, 0, window_height)
+    # Get x coordinates for internal points (matching psi dimensions)
+    x_internal = x[1:-1]
+    V_internal = V[1:-1]
+    
+    # 1. Plot Potential V(x) - using internal points for better visibility
+    V_clipped = np.clip(V_internal, 0, window_height)
     
     fig.add_trace(
         go.Scatter(
-            x=x.tolist() if hasattr(x, 'tolist') else x, 
+            x=x_internal.tolist() if hasattr(x_internal, 'tolist') else x_internal, 
             y=V_clipped.tolist() if hasattr(V_clipped, 'tolist') else V_clipped,
             mode='lines',
-            name='Potential V(x)',
-            line=dict(color='white', width=3),
-            fill='tozeroy',
-            fillcolor='rgba(255, 255, 255, 0.1)'
+            name='V(x)',
+            line=dict(color='#FFFFFF', width=2.5),
+            hovertemplate='V(x): %{y:.2f}<extra></extra>'
         ),
         row=1, col=1
     )
 
     # 2. Plot Wavefunctions (shifted by Energy)
-    colors = ['#00ADB5', '#FF2E63', '#F38181', '#FCE38A', '#EAFFD0']
-    
-    # Get x coordinates for internal points (matching psi dimensions)
-    x_internal = x[1:-1]
+    colors = ['#00ADB5', '#FF2E63', '#F38181', '#FCE38A', '#EAFFD0', 
+              '#95E1D3', '#FFB6C1', '#DDA0DD', '#87CEEB', '#98FB98']
     
     for n in range(states):
         # Normalize wavefunction amplitude
@@ -135,9 +136,14 @@ def plot_interactive(E, psi, V, x, nos=5):
         max_amp = np.max(np.abs(psi_n))
         if max_amp > 1e-9:
             psi_n = psi_n / max_amp
+        else:
+            psi_n = psi_n
             
         # Shift by energy
         y_shifted = psi_n * scale + E[n]
+        
+        # Hide where potential is infinite
+        y_shifted[V_internal > 1e5] = np.nan
 
         color = colors[n % len(colors)]
         
@@ -156,9 +162,9 @@ def plot_interactive(E, psi, V, x, nos=5):
                 x=x_plot.tolist() if hasattr(x_plot, 'tolist') else x_plot, 
                 y=y_plot.tolist() if hasattr(y_plot, 'tolist') else y_plot,
                 mode='lines',
-                name=f'ψ_{n} (E={E[n]:.4f})',
+                name=f'n={n+1}, E={E[n]:.4f}',
                 line=dict(color=color, width=2),
-                hoverinfo='name+x+y'
+                hovertemplate=f'n={n+1}<br>E={E[n]:.4f}<br>x: %{{x:.2f}}<br>ψ: %{{y:.2f}}<extra></extra>'
             ),
             row=1, col=1
         )
@@ -170,23 +176,48 @@ def plot_interactive(E, psi, V, x, nos=5):
                 mode='lines',
                 line=dict(color=color, width=3),
                 showlegend=False,
-                hoverinfo='y'
+                hovertemplate=f'E_{n+1}={E[n]:.4f}<extra></extra>'
             ),
             row=1, col=2
         )
 
-    # Layout Styling
+    # Layout Styling - Enhanced dark mode
     fig.update_layout(
         template="plotly_dark",
         height=600,
         margin=dict(l=20, r=20, t=50, b=20),
-        legend=dict(orientation="h", y=1.1),
-        hovermode="x unified"
+        legend=dict(
+            orientation="h", 
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=10)
+        ),
+        hovermode="closest",
+        plot_bgcolor='#0e1117',
+        paper_bgcolor='#0e1117',
+        font=dict(color='#FAFAFA')
     )
     
-    fig.update_xaxes(title_text="Position (a.u.)", row=1, col=1)
-    fig.update_xaxes(showticklabels=False, row=1, col=2)
-    fig.update_yaxes(title_text="Energy (Hartree)", range=[0, window_height], row=1, col=1)
+    fig.update_xaxes(
+        title_text="Position (a.u.)", 
+        row=1, col=1,
+        gridcolor='#2a2a2a',
+        showgrid=True
+    )
+    fig.update_xaxes(
+        showticklabels=False, 
+        row=1, col=2,
+        showgrid=False
+    )
+    fig.update_yaxes(
+        title_text="Energy (Hartree)", 
+        range=[0, max_E * 1.2], 
+        row=1, col=1,
+        gridcolor='#2a2a2a',
+        showgrid=True
+    )
     
     return fig
 
