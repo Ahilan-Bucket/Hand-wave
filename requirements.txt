@@ -6,3 +6,4 @@ mediapipe
 plotly
 qmsolve
 scipy
+qrcode
