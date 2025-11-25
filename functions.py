@@ -14,11 +14,12 @@ m = 1
 L = 50
 N_GRID = 2000
 global Last_k_value # Used by harmonic() and check_harmonic_analytic()
+TUNNELING_THRESHOLD = 0.01  # 1% of total probability considered significant
 
 # ==========================================
 # 2. GRID FUNCTIONS
 # ==========================================
-def make_grid(L=L, N=N_GRID):
+def make_grid(x_min,x_max,L=0, N_GRID=N_GRID):
     """
     Create a spatial grid for solving the Schrödinger equation.
     
@@ -50,7 +51,11 @@ def make_grid(L=L, N=N_GRID):
     >>> print(f"Domain: [{x[0]:.1f}, {x[-1]:.1f}], spacing: {dx:.4f}")
     Domain: [-10.0, 10.0], spacing: 0.0200
     """
-    x = np.linspace(-L/2, L/2, N+2)
+    if L:
+        x = np.linspace(-L/2, L/2, N_GRID+2)
+    else:
+        x = np.linspace(x_min, x_max,N_GRID+2)
+
     dx = x[1] - x[0]
     x_internal = x[1:-1]
     return x, dx, x_internal
@@ -160,7 +165,7 @@ def gaussian_well(x, center=0.0, width=1.0, depth=50):
     """
     return -depth * np.exp(-(x - center)**2 / (2 * width**2))
 
-def inf_sqaure_well(x, lower_bound, upper_bound):
+def inf_square_well(x, lower_bound, upper_bound):
     """
     Create an infinite square well (particle in a box) potential.
     
@@ -190,14 +195,17 @@ def inf_sqaure_well(x, lower_bound, upper_bound):
     Examples
     --------
     >>> x = np.linspace(-15, 15, 1000)
-    >>> V = inf_sqaure_well(x, lower_bound=-10, upper_bound=10)  # L = 20
+    >>> V = inf_square_well(x, lower_bound=-10, upper_bound=10)  # L = 20
     >>> # Use with check_ISW_analytic(E, lower_bound=-10, upper_bound=10)
     """
     HUGE_NUMBER = 1e10
     V = np.zeros_like(x) 
-    V[x < lower_bound] = HUGE_NUMBER
-    V[x > upper_bound] = HUGE_NUMBER
+    V[x <= lower_bound] = HUGE_NUMBER
+    V[x >= upper_bound] = HUGE_NUMBER
     return V
+
+# Alias for backward compatibility (fixing typo)
+inf_sqaure_well = inf_square_well
 
 def inf_wall(x, side, bound):
     """
@@ -235,9 +243,9 @@ def inf_wall(x, side, bound):
     side = side.strip(', . ').lower() 
 
     if side == 'left':
-        V[x < bound] = HUGE_NUMBER
+        V[x <= bound] = HUGE_NUMBER
     elif side == 'right':
-        V[x > bound] = HUGE_NUMBER
+        V[x >= bound] = HUGE_NUMBER
     return V
 
 def finite_barrier(x, center, width, height):
@@ -321,58 +329,34 @@ def custom2(value,x):
 
 # In psi_solve2/functions.py
 
-def finite_square_well(x, lower_bound, upper_bound, depth_V):
+def finite_square_well(x, lower_bound, upper_bound, depth, pad=False, wall_value=1e10):
     """
-    Create a finite square well potential.
-    
-    The potential is zero inside the well and has finite height depth_V outside.
-    Unlike the infinite square well, particles can exist in the barrier region
-    with exponentially decaying wavefunctions.
-    
+    Create a finite square‑well potential.
+
     Parameters
     ----------
     x : ndarray
-        Spatial grid points
-    lower_bound : float
-        Left boundary of the well
-    upper_bound : float
-        Right boundary of the well
-    depth_V : float
-        Height of the potential barriers outside the well (V₀)
-    
-    Returns
-    -------
-    V : ndarray
-        Finite square well potential:
-        - V(x) = 0 for lower_bound ≤ x ≤ upper_bound (inside well)
-        - V(x) = depth_V for x < lower_bound or x > upper_bound (barrier regions)
-    
+        Spatial grid points (the *internal* grid, length N).
+    lower_bound, upper_bound : float
+        Left and right limits of the well (inclusive).
+    depth : float
+        Positive number → the well depth (V = –depth inside).
+    pad : bool, optional
+        If True, the function returns a *full* array of length N+2 with
+        ``wall_value`` at the two outermost points.
+    wall_value : float, optional
+        Value used for the boundary walls when ``pad=True``.
     """
-    """    
-    Notes
-    -----
-    - Bound states exist only when E < depth_V
-    - Number of bound states depends on well width and depth_V
-    - For bound states, wavefunction decays exponentially in barrier (E < V)
-    - For scattering states (E > depth_V), wavefunction oscillates everywhere
-    - Use check_finite_well_analytic() to verify numerical results
-    
-    Examples
-    --------
-    >>> x = np.linspace(-15, 15, 1000)
-    >>> V_deep = finite_square_well(x, -10, 10, depth_V=2.0)  # Deep well, many bound states
-    >>> V_shallow = finite_square_well(x, -10, 10, depth_V=0.01)  # Shallow, few/no bound states
-    """
-    # Start with a baseline of zero potential
-    V = np.zeros_like(x) 
-    
-    # The walls outside the well are set to the height/depth V_0
-    V[x < lower_bound] = depth_V
-    V[x > upper_bound] = depth_V
-    
-    # The potential *inside* the well remains V=0 (or whatever you set the baseline to)
+    V = np.zeros_like(x)
+    V[x < lower_bound] = wall_value
+    V[x > upper_bound] = wall_value
+    V[(x >= lower_bound) & (x <= upper_bound)] = -depth
+
+    if pad:
+        V = np.pad(V, (1, 1), constant_values=wall_value)
     return V
 
+    
 # ==========================================
 # 4. SCHRÖDINGER EQUATION SOLVER
 # ==========================================
@@ -490,6 +474,17 @@ def solve(T, V_full, dx):
     >>> print(f"Normalization: {norm:.6f}")  # Should be 1.0
     """
     V_internal = V_full[1:-1]
+    # Construct Hamiltonian with helpful error handling
+    try:
+        H = T + np.diag(V_internal)
+    except ValueError as e:
+        raise RuntimeError(
+            "Failed to construct Hamiltonian: shape mismatch between kinetic operator "
+            f"{T.shape} and potential diagonal {V_internal.shape}. "
+            "If you are using a finite square well, ensure the potential includes the two "
+            "boundary points (e.g., call finite_square_well(..., pad=True) or manually pad "
+            "with np.pad(V, (1,1), constant_values=1e10)."
+        ) from e
     H = T + np.diag(V_internal)
 
     E, psi = np.linalg.eigh(H) 
@@ -543,8 +538,33 @@ def plot_V(V_raw_input):
 
     plt.style.use("dark_background")
     fig, ax = plt.subplots(figsize=(6, 2))
-    ax.plot(V_raw_input, lw=1.5, color="cyan")
-    ax.set_title("Potential Input")
+    
+    # Fix for Infinite Well: Clip potential for plotting
+    # If the potential has huge values (like 1e10), clip them for visualization
+    # otherwise the plot will be dominated by the walls and the well will look flat.
+    # We'll clip to a reasonable value, e.g., slightly above the max "finite" value 
+    # or just a fixed large-ish number if everything is huge.
+    
+    # Simple heuristic: Clip to 200 if max is huge, or use max if it's small.
+    # A better approach might be to check for the "infinite" marker.
+    
+    V_plot = V_raw_input.copy()
+    
+    # Check if we have "infinite" walls (arbitrarily > 1e5)
+    if np.any(V_plot > 1e5):
+        # Find the maximum value that is NOT "infinite"
+        finite_vals = V_plot[V_plot < 1e5]
+        if len(finite_vals) > 0:
+            max_finite = np.max(finite_vals)
+            # Clip to slightly above that, or at least 10 if it's 0
+            clip_val = max(max_finite * 2.0, 10.0)
+            V_plot = np.clip(V_plot, -np.inf, clip_val)
+        else:
+            # If everything is huge, just clip to something to show it exists
+            V_plot = np.clip(V_plot, -np.inf, 10.0)
+            
+    ax.plot(V_plot, lw=1.5, color="cyan")
+    ax.set_title("Potential Input (Clipped for Visibility)")
     ax.set_xlabel("Grid index")
     ax.set_ylabel("Potential")
     fig.tight_layout()
@@ -618,7 +638,26 @@ def plot_alive(E, psi, V, x, no=1, nos=5, mode=''):
     V_internal = V[1:-1]
 
     # --- Plot Potential ---
-    ax1.plot(x, V, color="white", lw=2, label="V(x)", alpha=0.7)
+    # Fix for Infinite Well: Clip potential for plotting so it doesn't scale to 1e10
+    if len(E) > 0:
+        # Determine the energy range we are interested in
+        if mode == 'all':
+            # If plotting multiple states, scale based on the highest one we show
+            max_E_interest = E[min(nos, len(E)) - 1]
+        else:
+            # If plotting single state, scale based on that state's energy
+            max_E_interest = E[no]
+            
+        # Set a cutoff slightly above the highest energy level
+        # Ensure cutoff is at least something visible (e.g. 1.0) if energies are tiny
+        cutoff = max(max_E_interest * 2.0, 1.0)
+        
+        # Clip V for plotting purposes only
+        V_plot = np.clip(V, -np.inf, cutoff)
+    else:
+        V_plot = V
+
+    ax1.plot(x, V_plot, color="white", lw=2, label="V(x)", alpha=0.7)
 
     # --- Plot wavefunctions ---
     if mode == 'all':
@@ -675,52 +714,130 @@ def plot_alive(E, psi, V, x, no=1, nos=5, mode=''):
 def plot_dead(E, psi, V, x, nos=5):
     """Textbook: wavefunctions vertically shifted by energy."""
     plt.style.use("dark_background")
-    fig, (ax_main, ax_bar) = plt.subplots(
-        1, 2, figsize=(10, 7), gridspec_kw={"width_ratios": [5, 1]}
-    )
-    fig.subplots_adjust(bottom=0.2, wspace=0.4)
+# ==========================================
+# 7. EDUCATIONAL ANALYSIS
+# ==========================================
 
-    states = min(nos, len(E))
-    x_solver = x[1:-1]
+def analyze_potential(V, x):
+    """
+    Analyze the potential to provide educational feedback.
+    """
+    feedback = []
+    
+    # Check for constant potential
+    if np.allclose(V, V[0]):
+        feedback.append("The potential is constant everywhere. This simulates a free particle.")
+        return feedback
+
+    # Check if potential is effectively infinite everywhere (flat line at 0 or high value)
+    # If V is 0 everywhere inside bounds but bounds = grid limits, it looks flat.
+    # We use a threshold for "infinite"
+    HUGE_VAL = 1e5
+    if np.all(V > HUGE_VAL):
+        feedback.append("The potential is effectively infinite everywhere. The particle cannot exist here.")
+    elif np.all(V == 0):
+        feedback.append("The potential is zero everywhere (Free Particle).")
+    
+    # Check for "Infinite Square Well" filling the grid
+    # If V is 0 inside and huge at the very edges (or not even there if grid is small)
+    # We check if the "well" part covers the whole internal grid.
     V_internal = V[1:-1]
+    if np.all(V_internal == 0) and (V[0] > HUGE_VAL or V[-1] > HUGE_VAL):
+        feedback.append("This looks like an Infinite Square Well.")
+        feedback.append("Note: If the well width equals the grid width, you will only see a flat line.")
+        feedback.append("Try reducing the well width (e.g., set bounds to -10 and 10) to see the walls.")
 
-    if states <= 0:
-        return fig
+    return feedback
 
-    scale = (E[1] - E[0]) * 0.4 if states > 1 else max(E[0] * 0.1, 0.5)
-    max_E = E[states - 1]
-    window_height = max_E * 1.5
+def analyze_state(E_n, psi_n, V, x, threshold=None):
+    """
+    Analyze a specific quantum state.
+    """
+    feedback = []
+    dx = x[1] - x[0]
+    
+    # 1. Check if Bound State
+    # A state is bound if its energy is less than the potential at the boundaries (infinity or finite)
+    # We check the "walls" of the simulation.
+    V_left = V[0]
+    V_right = V[-1]
+    min_wall = min(V_left, V_right)
+    
+    is_bound = E_n < min_wall
+    
+    if is_bound:
+        feedback.append(f"State is BOUND (E = {E_n:.4f} < Wall Height).")
+    else:
+        feedback.append(f"State is SCATTERING/UNBOUND (E = {E_n:.4f} > Wall Height).")
+        
+    # 2. Check for Tunneling
+    # Tunneling happens where E < V but probability is non-zero.
+    # We define "classically forbidden" as regions where V(x) > E_n
+    # Note: psi_n is defined on the INTERNAL grid (N points)
+    # V is defined on the FULL grid (N+2 points)
+    # We must slice V to match psi_n
+    V_internal = V[1:-1]
+    
+    forbidden_mask = V_internal > E_n
+    
+    # Calculate probability in forbidden regions
+    prob_density = psi_n**2
+    prob_forbidden = np.sum(prob_density[forbidden_mask]) * dx
+    
+    # Calculate total probability (should be ~1.0)
+    total_prob = np.sum(prob_density) * dx
+    
+    # Use provided threshold or global default
+    if threshold is None:
+        threshold = TUNNELING_THRESHOLD
+    
+    if prob_forbidden > threshold * total_prob:
+        feedback.append(f"TUNNELING DETECTED: {prob_forbidden*100:.1f}% probability in classically forbidden regions.")
+    else:
+        feedback.append(f"No significant tunnelling detected (probability {prob_forbidden*100:.2f}% below threshold).")
+    
+    return feedback
 
-    # Plot shifted wavefunctions
-    for n in range(states):
-        psi_n = psi[:, n]
-        maxabs = np.max(np.abs(psi_n))
-        psi_norm = psi_n / (maxabs if maxabs != 0 else 1)
-        y = psi_norm * scale + E[n]
-        y[V_internal > 1e5] = np.nan  # hide where potential is infinite
+def generate_educational_feedback(E, psi, V, x, state_idx=0):
+    """
+    Generate a comprehensive text report for the user.
+    """
+    report = []
+    report.append("--- PHYSICS INSIGHTS ---")
+    
+    # Potential Analysis
+    pot_feedback = analyze_potential(V, x)
+    for msg in pot_feedback:
+        report.append(f"• {msg}")
+        
+    if len(E) == 0:
+        report.append("• NO STATES FOUND! Try increasing the well depth or width.")
+        return "\n".join(report)
+        
+    # State Analysis
+    if state_idx < len(E):
+        state_feedback = analyze_state(E[state_idx], psi[:, state_idx], V, x)
+        for msg in state_feedback:
+            report.append(f"• {msg}")
+            
+    return "\n".join(report)
 
-        color = plt.colormaps["tab20"].colors[n % 20]
-        ax_main.plot(x_solver, y, lw=1.3, color=color, label=f"n={n+1}, E={E[n]:.2f}")
-
-    # Plot potential
-    V_clip = np.clip(V, 0, window_height)
-    ax_main.plot(x, V_clip, color="white", lw=2, label="V(x)")
-
-    ax_main.set_title("Eigenstates + Potential")
-    ax_main.set_xlabel("x [a.u.]")
-    ax_main.set_ylabel("Energy / ψ")
-    ax_main.set_ylim(0, max_E * 1.2)
-    ax_main.legend(fontsize=8)
-
-    # Energy levels
-    ax_bar.set_title("Energy Spectrum")
-    ax_bar.set_xticks([])
-    ax_bar.set_ylim(0, np.max(E[:states]) * 1.1)
-    for n in range(states):
-        ax_bar.axhline(E[n], lw=1, color=plt.colormaps["tab20"].colors[n % 20])
-
+def plot_educational(E, psi, V, x, no=0):
+    """
+    Enhanced plotting with educational feedback.
+    """
+    # 1. Generate the standard plot
+    fig = plot_alive(E, psi, V, x, no=no, mode='')
+    
+    # 2. Generate feedback
+    feedback = generate_educational_feedback(E, psi, V, x, state_idx=no)
+    
+    # 3. Add feedback as text below the plot
+    # We can add it to the figure using fig.text()
+    fig.text(0.5, -0.1, feedback, ha='center', va='top', fontsize=10, 
+             bbox=dict(boxstyle="round,pad=0.5", fc="white", ec="black", alpha=0.8))
+             
     return fig
-
 
 # ==========================================
 # 6. BENCHMARKING FUNCTIONS
@@ -762,7 +879,7 @@ def show_matrix(overlap_matrix,how='normal',round_value=10):
         plt.locator_params(axis='x', integer=True)
         plt.show()
 
-def check_ISW_analytic(E, lower_bound=-10, upper_bound=10, hbar=1.0, m=1.0, max_levels=6):
+def check_ISW_analytic(E, lower_bound=None, upper_bound=None, L=None, hbar=1.0, m=1.0, max_levels=6):
     """
     Compares numerical energies to the Infinite Square Well analytic formula.
     
@@ -771,23 +888,32 @@ def check_ISW_analytic(E, lower_bound=-10, upper_bound=10, hbar=1.0, m=1.0, max_
     E : array
         Numerical eigenvalues
     lower_bound : float
-        Lower boundary of the well (default: -10)
+        Lower boundary of the well
     upper_bound : float
-        Upper boundary of the well (default: 10)
+        Upper boundary of the well
+    L : float
+        Width of the well (optional, can be used instead of bounds)
     hbar : float
         Reduced Planck constant (default: 1.0)
     m : float
         Particle mass (default: 1.0)
     max_levels : int
         Number of levels to check (default: 6)
+    """
+    
+    if L is None:
+        if lower_bound is None or upper_bound is None:
+             # Fallback defaults if nothing provided
+             if lower_bound is None: lower_bound = -10
+             if upper_bound is None: upper_bound = 10
+             L = upper_bound - lower_bound
+        else:
+             L = upper_bound - lower_bound
+    
+    if L <= 0:
+        print(f"Error: Invalid well width L={L}. Check your bounds.")
+        return None, None
 
-    """
-    """            
-    Example:
-    --------
-    check_ISW_analytic(E, lower_bound=-10, upper_bound=10)
-    """
-    L = upper_bound - lower_bound  # Well width
     CHECK_N = min(max_levels, len(E))
     E_numerical = E[:CHECK_N]
     E_analytic = np.zeros(CHECK_N)
@@ -797,19 +923,97 @@ def check_ISW_analytic(E, lower_bound=-10, upper_bound=10, hbar=1.0, m=1.0, max_
         E_analytic[i] = (hbar**2 * np.pi**2 * n**2) / (2*m*L**2)
 
     print("\n### ENERGY BENCHMARK: Infinite Square Well ###")
-    print(f"Well boundaries: x = [{lower_bound}, {upper_bound}], Width L = {L}")
-    print("-" * 55)
+    print(f"Well Width L = {L:.4f}")
+    print("-" * 65)
     print(f"| n | Analytic E | Numerical E | % Error |")
-    print("-" * 55)
+    print("-" * 65)
 
     for i in range(CHECK_N):
-        percent_error = np.abs((E_numerical[i] - E_analytic[i]) / E_analytic[i]) * 100
+        if E_analytic[i] != 0:
+            percent_error = np.abs((E_numerical[i] - E_analytic[i]) / E_analytic[i]) * 100
+        else:
+            percent_error = np.inf
+            
         print(
             f"| {i+1:<1} | {E_analytic[i]:<10.6f} | {E_numerical[i]:<11.6f} | {percent_error:<7.4f}% |"
         )
-    print("-" * 55)
+    print("-" * 65)
     
     return E_analytic, E_numerical
+
+def verify_solver_analytic(E, potential_type, params):
+    """
+    Master verification function.
+    
+    potential_type: 'ISW', 'Harmonic', 'FiniteWell'
+    params: dict of parameters
+    """
+    if potential_type == 'ISW':
+        return check_ISW_analytic(E, **params)
+    elif potential_type == 'Harmonic':
+        # check_harmonic_analytic takes k, not omega
+        k = params.get('k')
+        if k is None:
+            if 'omega' in params:
+                # k = m * w^2
+                m = params.get('m', 1.0)
+                k = m * params['omega']**2
+            else:
+                print("Error: Harmonic check requires 'k' or 'omega' in params.")
+                return
+        
+        return check_harmonic_analytic(E, k=k)
+    else:
+        print(f"Unknown potential type: {potential_type}")
+
+def benchmark_qmsolve_suite():
+    """
+    Runs a comparison suite against QMSolve.
+    Requires qmsolve package.
+    """
+    try:
+        from qmsolve import Hamiltonian, SingleParticle, init_visualization
+    except ImportError:
+        print("QMSolve not installed. Skipping benchmark.")
+        return
+
+    print("\n=== Running QMSolve Benchmark Suite ===")
+    # TODO: Implement full suite (Harmonic, Double Well)
+    # This is a placeholder for the full implementation
+    print("Harmonic Oscillator Test: [PENDING]")
+    print("Double Well Test: [PENDING]")
+
+def benchmark_user_potential(V_array, x_grid, hbar=1.0, m=1.0):
+    """
+    Benchmarks a user-provided potential array against QMSolve using interpolation.
+    """
+    try:
+        from qmsolve import Hamiltonian, SingleParticle, init_visualization
+    except ImportError:
+        print("QMSolve not installed. Cannot benchmark.")
+        return
+
+    print("\n=== Benchmarking Custom Potential vs QMSolve ===")
+    
+    # 1. Define QMSolve wrapper
+    def potential_func(particle):
+        return np.interp(particle.x, x_grid, V_array)
+
+    # 2. Setup QMSolve
+    L = x_grid[-1] - x_grid[0]
+    N = len(x_grid)
+    
+    # QMSolve interaction
+    H = Hamiltonian(particles = SingleParticle(), 
+                    potential = potential_func, 
+                    spatial_ndim = 1, N = N, extent = L)
+
+    # Eigenstates
+    eigenstates = H.solve(max_states = 10)
+    eigenvalues = eigenstates.energies
+    
+    print(f"QMSolve Eigenvalues (first 5): {eigenvalues[:5]}")
+    return eigenvalues
 
 def check_harmonic_analytic(E, k=None, center=0.0, hbar=1.0, m=1.0, max_levels=6):
     """
@@ -1136,7 +1340,7 @@ def verify_qmsolve(E_your=None, psi_your=None, V_your=None, x_your=None,
     Compares your Hand-wave results against QMSolve using the same potential.
     
     Parameters
-    ----------
+----------
     E_your : ndarray, optional
         Your computed energy eigenvalues
         If None, will compute using default double well
@@ -1904,147 +2108,6 @@ def capture_potential(tune, A_MIN, A_MAX, mode='wait'):
     return captured_V
 
 # Create a notebook-friendly version of the function
-def cheese(tune, A_MIN, A_MAX, mode='wait'):
-    import time
-    from IPython.display import display, Image, clear_output
-
-    
-    # Copy relevant constants from the file for local scope
-    THUMB_TIP_ID = 4
-    INDEX_TIP_ID = 8
-    REQUIRED_STABLE_FRAMES = 45
-    MOVEMENT_THRESHOLD = 0.015
-    PLOT_CEILING_A = 10.0
-    EPS = 1e-9
-    
-    D_MIN = 0.001
-    D_MAX = 0.2
-    D_RANGE = D_MAX - D_MIN
-    A_RANGE = A_MAX - A_MIN
-    SLOPE = -A_RANGE / D_RANGE
-    INTERCEPT = A_MAX - SLOPE * D_MIN
-    # End of copied constants
-    
-    cap = cv2.VideoCapture(0)
-    captured_V = None
-    
-    if not cap.isOpened():
-        print("Error: Could not open video stream. Check permissions or camera index.")
-        return None
-
-    stability_counter = 0
-    prev_landmarks = []
-    
-    start_time = time.time()
-    MAX_RUN_TIME_SECONDS = 30 
-    
-    print("Controls: HOLD STILL to capture, or wait for the time limit to exit.")
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-            
-        frame = cv2.flip(frame, 1)
-        h, w, _ = frame.shape
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        res = hands.process(rgb)
-
-        pot_profile = None
-        mode_msg = "No Hands"
-        params_to_display = []
-        current_landmarks_flat = []
-
-        # --- LANDMARK AND POTENTIAL LOGIC (Skipped for brevity, assume this is correct) ---
-        if res.multi_hand_landmarks:
-            for hand_lms in res.multi_hand_landmarks:
-                for lm in hand_lms.landmark:
-                    current_landmarks_flat.extend([lm.x, lm.y])
-            for lm in res.multi_hand_landmarks:
-                drawer.draw_landmarks(frame, lm, mp_hands.HAND_CONNECTIONS)
-            
-            # TWO HANDS (Square Well)
-            if len(res.multi_hand_landmarks) >= 2:
-                mode_msg = "Mode: Square Well (Auto-Centered)"
-                x_coords = [lm.landmark[INDEX_TIP_ID].x * w for lm in res.multi_hand_landmarks]
-                x_coords.sort()
-                xL_hand, xR_hand = int(x_coords[0]), int(x_coords[1])
-                cv2.line(frame, (xL_hand, 0), (xL_hand, h), (0, 255, 255), 2)
-                cv2.line(frame, (xR_hand, 0), (xR_hand, h), (0, 255, 255), 2)
-                well_width = xR_hand - xL_hand
-                center_screen = w / 2
-                centered_L = center_screen - (well_width / 2)
-                centered_R = center_screen + (well_width / 2)
-                params_to_display.append(f"Width: {well_width:4.0f} px")
-                params_to_display.append(f"Status: Centered")
-                x_space = np.linspace(0, w, 400)
-                pot_profile = np.ones_like(x_space)
-                pot_profile[(x_space > centered_L) & (x_space < centered_R)] = 0
-            # ONE HAND (QHO)
-            elif len(res.multi_hand_landmarks) == 1:
-                mode_msg = "Mode: Pinch QHO"
-                lm = res.multi_hand_landmarks[0]
-                thumb = lm.landmark[THUMB_TIP_ID]
-                index = lm.landmark[INDEX_TIP_ID]
-                dx = index.x - thumb.x
-                dy = index.y - thumb.y
-                pinch_distance = math.sqrt(dx**2 + dy**2)
-                A = SLOPE * pinch_distance + INTERCEPT
-                A = max(A_MIN, min(A_MAX, A))
-                x_space = np.linspace(-1, 1, 400)
-                pot_profile = A * (x_space**2)
-                pot_profile = pot_profile / (PLOT_CEILING_A + EPS)
-                pot_profile = np.clip(pot_profile, 0.0, 1.0)
-                params_to_display.append(f"Pinch Dist: {pinch_distance:.4f}")
-                params_to_display.append(f"A (curv): {A:.4f}")
-                display_pts = np.column_stack(((x_space + 1)/2 * w, (1 - pot_profile) * h)).astype(np.int32)
-                cv2.polylines(frame, [display_pts], False, (0, 0, 255), 2)
-        # --- END LANDMARK AND POTENTIAL LOGIC ---
-
-        # STABILITY CHECK
-        if mode != 'wait':
-            if current_landmarks_flat and prev_landmarks and len(current_landmarks_flat) == len(prev_landmarks):
-                movement = np.mean(np.abs(np.array(current_landmarks_flat) - np.array(prev_landmarks)))
-                stability_counter = stability_counter + 1 if movement < MOVEMENT_THRESHOLD else 0
-            else:
-                stability_counter = 0
-
-            prev_landmarks = current_landmarks_flat
-
-            if stability_counter > 0:
-                progress = stability_counter / REQUIRED_STABLE_FRAMES
-                bar_width = int(w * progress)
-                color = (0, 255*progress, 255*(1-progress))
-                cv2.rectangle(frame, (0, 0), (bar_width, 20), color, -1)
-                cv2.putText(frame, "HOLDING...", (10, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-
-            # Finished
-            if stability_counter >= REQUIRED_STABLE_FRAMES and pot_profile is not None:
-                captured_V = pot_profile
-                cap.release()
-                # --- LINE REMOVED HERE (was cv2.destroyAllWindows()) ---
-                print("Stable capture triggered and video stream closed.")
-                return captured_V
-
-        # UI OVERLAY
-        cv2.putText(frame, mode_msg, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        display_params(frame, params_to_display)
-        
-        # NOTEBOOK DISPLAY
-        clear_output(wait=True) 
-        _, buffer = cv2.imencode('.jpeg', frame)
-        display(Image(data=buffer.tobytes()))
-        
-        time.sleep(0.01)
-
-        if time.time() - start_time > MAX_RUN_TIME_SECONDS:
-            print(f"Time limit of {MAX_RUN_TIME_SECONDS} seconds reached.")
-            break
-
-    # -----------------------------------------------------------------
-    cap.release()
-    return captured_V
-
 
 
 
@@ -2085,3 +2148,400 @@ def show_QR(url):
 
 
 
+
+
+# ==========================================
+# 10. MEDIAPIPE HAND TRACKING FOR INTERACTIVE POTENTIALS
+# ==========================================
+
+def process_frame_to_potential(frame):
+    """
+    Takes a BGR frame (OpenCV) and returns a 1D potential profile from hand gestures.
+    
+    Uses MediaPipe to track hand landmarks and convert them into quantum potentials:
+    - 2 hands → Square well (0 inside, 1 outside)
+    - 1 hand → Harmonic oscillator (parabola based on pinch distance)
+    
+    Parameters
+    ----------
+    frame : ndarray
+        BGR image from OpenCV (camera frame)
+    
+    Returns
+    -------
+    pot_profile : ndarray or None
+        1D array in [0,1] representing V(x) profile (400 points)
+    msg : str
+        Human-friendly status message
+    """
+    try:
+        import mediapipe as mp
+        import cv2
+        
+        mp_hands = mp.solutions.hands
+        with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5) as hands:
+            h, w, _ = frame.shape
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            res = hands.process(rgb)
+
+            if not res.multi_hand_landmarks:
+                return None, "No Hands Detected"
+
+            # 1. Square Well (2 Hands)
+            if len(res.multi_hand_landmarks) >= 2:
+                INDEX_TIP_ID = 8
+                x_coords = [lm.landmark[INDEX_TIP_ID].x * w for lm in res.multi_hand_landmarks]
+                x_coords.sort()
+                
+                xL_hand, xR_hand = x_coords[0], x_coords[1]
+                well_width = xR_hand - xL_hand
+                
+                center_screen = w / 2
+                centered_L = center_screen - (well_width / 2)
+                centered_R = center_screen + (well_width / 2)
+                
+                x_space = np.linspace(0, w, 400)
+                pot_profile = np.ones_like(x_space)
+                pot_profile[(x_space > centered_L) & (x_space < centered_R)] = 0
+                
+                return pot_profile, "Square Well (Captured)"
+
+            # 2. Harmonic Oscillator (1 Hand)
+            elif len(res.multi_hand_landmarks) == 1:
+                lm = res.multi_hand_landmarks[0]
+                THUMB = lm.landmark[4]
+                INDEX = lm.landmark[8]
+                
+                dx = INDEX.x - THUMB.x
+                dy = INDEX.y - THUMB.y
+                dist = math.sqrt(dx**2 + dy**2)
+                
+                A = np.interp(dist, [0.05, 0.3], [100.0, 1.0]) 
+                
+                x_space = np.linspace(-1, 1, 400)
+                pot_profile = A * (x_space**2)
+                
+                pot_profile = np.clip(pot_profile, 0, 100)
+                pot_profile = pot_profile / 100.0
+                
+                return pot_profile, f"Harmonic Oscillator (k={A:.1f})"
+                
+    except ImportError:
+        return None, "MediaPipe or OpenCV not installed"
+    except Exception as e:
+        return None, f"Error: {e}"
+            
+    return None, "Error"
+
+
+# ==========================================
+# 11. POTENTIAL COMPOSITION (LEGO PIECES)
+# ==========================================
+
+def combine_potentials(x, potentials, weights=None):
+    """
+    Combine multiple potentials as weighted sum (like lego pieces).
+    
+    Parameters
+    ----------
+    x : ndarray
+        Spatial grid points
+    potentials : list of ndarray
+        List of potential arrays
+    weights : list of float, optional
+        Weighting factors (default: all 1.0)
+        
+    Returns
+    -------
+    V_combined : ndarray
+        Combined potential
+        
+    Examples
+    --------
+    >>> x = np.linspace(-10, 10, 1000)
+    >>> V1 = inf_square_well(x, -5, 0)
+    >>> V2 = harmonic(x, k=1.0, center=5)
+    >>> V = combine_potentials(x, [V1, V2])
+    """
+    if weights is None:
+        weights = [1.0] * len(potentials)
+    
+    V_combined = np.zeros_like(x, dtype=float)
+    for V, w in zip(potentials, weights):
+        V_combined += w * V
+    
+    return V_combined
+
+
+# ==========================================
+# 12. MEDIAPIPE CAMERA CAPTURE FOR JUPYTER
+# ==========================================
+
+def display_params(frame, params_list, start_y=80):
+    """Display parameter list on frame."""
+    for i, param in enumerate(params_list):
+        import cv2
+        cv2.putText(frame, param, (10, start_y + i*25), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
+
+def cheese(tune=1, A_MIN=0, A_MAX=100, mode='wait'):
+    """
+    Interactive camera capture for quantum potentials using MediaPipe hand tracking.
+    
+    Parameters
+    ----------
+    tune : int
+        Tuning parameter (currently unused, for future extensions)
+    A_MIN : float
+        Minimum curvature value for harmonic oscillator
+    A_MAX : float
+        Maximum curvature value for harmonic oscillator
+    mode : str
+        'wait' for automatic capture on stability, '' for manual mode
+        
+    Returns
+    -------
+    captured_V : ndarray or None
+        Captured potential profile (400 points, normalized 0-1)
+        
+    Examples
+    --------
+    >>> V_raw = cheese(A_MIN=0, A_MAX=100, mode='wait')
+    >>> # Will capture automatically when hands are stable
+    
+    Notes
+    -----
+    - Two hands: Creates square well (auto-centered)
+    - One hand (pinch): Creates harmonic oscillator based on pinch distance
+    - In 'wait' mode: Automatically captures after REQUIRED_STABLE_FRAMES
+    - Displays live feedback in Jupyter notebooks
+    """
+    import time
+    import cv2
+    import mediapipe as mp
+    from IPython.display import display, Image, clear_output
+    
+    # MediaPipe landmarks
+    THUMB_TIP_ID = 4
+    INDEX_TIP_ID = 8
+    
+    # Stability detection
+    REQUIRED_STABLE_FRAMES = 45
+    MOVEMENT_THRESHOLD = 0.015
+    
+    # Harmonic oscillator mapping
+    PLOT_CEILING_A = 10.0
+    EPS = 1e-9
+    D_MIN = 0.001
+    D_MAX = 0.2
+    D_RANGE = D_MAX - D_MIN
+    A_RANGE = A_MAX - A_MIN
+    SLOPE = -A_RANGE / D_RANGE
+    INTERCEPT = A_MAX - SLOPE * D_MIN
+    
+    # Initialize MediaPipe
+    mp_hands = mp.solutions.hands
+    hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.7)
+    drawer = mp.solutions.drawing_utils
+    
+    cap = cv2.VideoCapture(0)
+    captured_V = None
+    
+    if not cap.isOpened():
+        print("Error: Could not open video stream. Check permissions or camera index.")
+        return None
+
+    stability_counter = 0
+    prev_landmarks = []
+    
+    start_time = time.time()
+    MAX_RUN_TIME_SECONDS = 30
+    
+    print("Controls: HOLD STILL to capture, or wait for the time limit to exit.")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        frame = cv2.flip(frame, 1)
+        h, w, _ = frame.shape
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        res = hands.process(rgb)
+
+        pot_profile = None
+        mode_msg = "No Hands"
+        params_to_display = []
+        current_landmarks_flat = []
+
+        if res.multi_hand_landmarks:
+            # Collect landmarks for stability detection
+            for hand_lms in res.multi_hand_landmarks:
+                for lm in hand_lms.landmark:
+                    current_landmarks_flat.extend([lm.x, lm.y])
+            
+            # Draw landmarks
+            for lm in res.multi_hand_landmarks:
+                drawer.draw_landmarks(frame, lm, mp_hands.HAND_CONNECTIONS)
+            
+            # TWO HANDS (Square Well)
+            if len(res.multi_hand_landmarks) >= 2:
+                mode_msg = "Mode: Square Well (Auto-Centered)"
+                x_coords = [lm.landmark[INDEX_TIP_ID].x * w for lm in res.multi_hand_landmarks]
+                x_coords.sort()
+                xL_hand, xR_hand = int(x_coords[0]), int(x_coords[1])
+                
+                # Draw visual guides
+                cv2.line(frame, (xL_hand, 0), (xL_hand, h), (0, 255, 255), 2)
+                cv2.line(frame, (xR_hand, 0), (xR_hand, h), (0, 255, 255), 2)
+                
+                well_width = xR_hand - xL_hand
+                center_screen = w / 2
+                centered_L = center_screen - (well_width / 2)
+                centered_R = center_screen + (well_width / 2)
+                
+                params_to_display.append(f"Width: {well_width:4.0f} px")
+                params_to_display.append(f"Status: Centered")
+                
+                # Generate potential
+                x_space = np.linspace(0, w, 400)
+                pot_profile = np.ones_like(x_space)
+                pot_profile[(x_space > centered_L) & (x_space < centered_R)] = 0
+                
+            # ONE HAND (QHO)
+            elif len(res.multi_hand_landmarks) == 1:
+                mode_msg = "Mode: Pinch QHO"
+                lm = res.multi_hand_landmarks[0]
+                thumb = lm.landmark[THUMB_TIP_ID]
+                index = lm.landmark[INDEX_TIP_ID]
+                
+                dx = index.x - thumb.x
+                dy = index.y - thumb.y
+                pinch_distance = math.sqrt(dx**2 + dy**2)
+                
+                # Map pinch to curvature
+                A = SLOPE * pinch_distance + INTERCEPT
+                A = max(A_MIN, min(A_MAX, A))
+                
+                x_space = np.linspace(-1, 1, 400)
+                pot_profile = A * (x_space**2)
+                pot_profile = pot_profile / (PLOT_CEILING_A + EPS)
+                pot_profile = np.clip(pot_profile, 0.0, 1.0)
+                
+                params_to_display.append(f"Pinch Dist: {pinch_distance:.4f}")
+                params_to_display.append(f"A (curv): {A:.4f}")
+                
+                # Draw potential curve
+                display_pts = np.column_stack(((x_space + 1)/2 * w, (1 - pot_profile) * h)).astype(np.int32)
+                cv2.polylines(frame, [display_pts], False, (0, 0, 255), 2)
+
+        # STABILITY CHECK (only in wait mode)
+        if mode == 'wait':
+            if current_landmarks_flat and prev_landmarks and len(current_landmarks_flat) == len(prev_landmarks):
+                movement = np.mean(np.abs(np.array(current_landmarks_flat) - np.array(prev_landmarks)))
+                stability_counter = stability_counter + 1 if movement < MOVEMENT_THRESHOLD else 0
+            else:
+                stability_counter = 0
+
+            prev_landmarks = current_landmarks_flat
+
+            # Draw stability progress bar
+            if stability_counter > 0:
+                progress = stability_counter / REQUIRED_STABLE_FRAMES
+                bar_width = int(w * progress)
+                color = (0, int(255*progress), int(255*(1-progress)))
+                cv2.rectangle(frame, (0, 0), (bar_width, 20), color, -1)
+                cv2.putText(frame, "HOLDING...", (10, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
+            # Capture when stable
+            if stability_counter >= REQUIRED_STABLE_FRAMES and pot_profile is not None:
+                captured_V = pot_profile
+                cap.release()
+                hands.close()
+                print("Stable capture triggered and video stream closed.")
+                return captured_V
+
+        # UI OVERLAY
+        cv2.putText(frame, mode_msg, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        display_params(frame, params_to_display)
+        
+        # NOTEBOOK DISPLAY
+        clear_output(wait=True) 
+        _, buffer = cv2.imencode('.jpeg', frame)
+        display(Image(data=buffer.tobytes()))
+        
+        time.sleep(0.01)
+
+        # Time limit check
+        if time.time() - start_time > MAX_RUN_TIME_SECONDS:
+            print(f"Time limit of {MAX_RUN_TIME_SECONDS} seconds reached.")
+            break
+
+    cap.release()
+    hands.close()
+    return captured_V
+
+
+def verify_and_solve(V_raw_input, x, dx, T, L):
+    """
+    Verify captured potential and solve the Schrödinger equation.
+    
+    Parameters
+    ----------
+    V_raw_input : ndarray
+        Raw potential from camera capture (400 points, 0-1 normalized)
+    x : ndarray
+        Full spatial grid (N+2 points)
+    dx : float
+        Grid spacing
+    T : ndarray
+        Kinetic operator matrix (N x N)
+    L : float
+        Total domain length
+        
+    Returns
+    -------
+    E_vals : ndarray
+        Energy eigenvalues
+    psi_vecs : ndarray
+        Wavefunction eigenvectors
+    V_full : ndarray
+        Full potential array for plotting
+        
+    Examples
+    --------
+    >>> E, psi, V = verify_and_solve(V_raw, x, dx, T, L)
+    >>> plot_educational(E, psi, V, x, no=0)
+    """
+    if V_raw_input is None:
+        print("Error: No potential captured!")
+        return None, None, None
+    
+    # Define internal grid
+    x_solver = x[1:-1]
+    
+    # Interpolate to solver grid
+    V_interpolated = np.interp(
+        x_solver, 
+        np.linspace(-L/2, L/2, len(V_raw_input)),
+        V_raw_input
+    )
+    
+    # Scale to energy units
+    V_max_height = 100.0
+    V_internal = V_interpolated * V_max_height
+    
+    # Prepare V_full with boundary padding
+    V_full = np.pad(V_internal, (1, 1), 'constant', constant_values=0.0)
+    
+    # Solve
+    try:
+        E_vals, psi_vecs = solve(T, V_full, dx)
+        print(f"Solver complete. Found {E_vals.size} eigenstates.")
+        return E_vals, psi_vecs, V_full
+    except Exception as e:
+        print(f"Error during solve: {e}")
+        if np.max(V_internal) > 1e9:
+            print("Potential may be too steep or high, leading to numerical error.")
+        return None, None, None
