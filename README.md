@@ -353,12 +353,13 @@ If you use this solver in your research, please cite:
 
 ## 📧 Contact
 
+
 **Ahilan Kumaresan**  
 Mathematical & Computational Physics  
 Simon Fraser University
 
+---
 
-<<<<<<< HEAD
 ## 🙏 Acknowledgments
 
 - **MediaPipe** (Google) for hand tracking
@@ -369,5 +370,3 @@ Simon Fraser University
 ---
 
 *This project showcases advanced computational physics methodology suitable for graduate-level research in quantum mechanics and numerical analysis.*
-=======
->>>>>>> a615dc9a62d4ab49ed3711b119d99694cd987197
