@@ -137,6 +137,4 @@ Simon Fraser University.
 Mathematical & Computational Physics  
 Simon Fraser University
 
----
 
-*This project showcases advanced computational physics methodology suitable for graduate-level research in quantum mechanics and numerical analysis.*
