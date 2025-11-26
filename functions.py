@@ -2937,7 +2937,7 @@ def display_params(frame, params_list, start_y=80):
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
 
-def cheese(tune=1, A_MIN=0, A_MAX=100, mode='wait'):
+def cheese(tune=1, A_MIN=0, A_MAX=100, mode='wait',max_time=30):
     # Reverse Compatability, def capture_hand_potential()
     """
     Interactive camera capture for quantum potentials using MediaPipe hand tracking.
@@ -3001,7 +3001,7 @@ def cheese(tune=1, A_MIN=0, A_MAX=100, mode='wait'):
     prev_landmarks = []
     
     start_time = time.time()
-    MAX_RUN_TIME_SECONDS = 30
+    MAX_RUN_TIME_SECONDS = max_time # 30
     
     print("Controls: HOLD STILL to capture, or wait for the time limit to exit.")
 
