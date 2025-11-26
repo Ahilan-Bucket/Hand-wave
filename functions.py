@@ -1,4 +1,4 @@
-# psi_solve2/functions.py
+# Peri-Peri/functions.py
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -13,52 +13,121 @@ hbar = 1
 m = 1
 L = 50
 N_GRID = 2000
+N = 2000
 global Last_k_value # Used by harmonic() and check_harmonic_analytic()
 TUNNELING_THRESHOLD = 0.01  # 1% of total probability considered significant
 
 # ==========================================
 # 2. GRID FUNCTIONS
 # ==========================================
-def make_grid(x_min,x_max,L=0, N_GRID=N_GRID):
+def make_grid(x_min=None, x_max=None, L=None, N=2000):
     """
     Create a spatial grid for solving the Schrödinger equation.
     
     Parameters
     ----------
+    x_min : float, optional
+        Minimum x value (required if L is not provided)
+    x_max : float, optional
+        Maximum x value (required if L is not provided)
     L : float, optional
-        Total length of the spatial domain (default: 50 a.u.)
+        Total length of the spatial domain. If provided, overrides x_min/x_max
+        to create a centered grid [-L/2, L/2].
     N : int, optional
         Number of internal grid points (default: 2000)
-    
+    - Pili : Make sure your values: what ever combination of x_min,x_max,L are large 
+     enough! and generally much smaller than the lower and upper bound you use for 
+     you'r Potential!! You should know that, at these GRID Edge points, we 
+     (the hamiltonian) would automatically set the GRID boundary to be zero, 
+     because this is the limit of our full local universe (Grid). The particle has no 
+     probability of being outside this grid, like an infinite wall. If the potential 
+     you input potential is near this, they will interact. 
+
     Returns
     -------
     x_full : ndarray
-        Full grid with N+2 points from -L/2 to L/2, including boundary points
+        Full grid with N+2 points, including boundary points
     dx : float
-        Grid spacing (distance between adjacent points)
+        Grid spacing
     x_internal : ndarray
-        Internal grid points (N points) where the wavefunction is solved
-        Excludes the boundary points at x[0] and x[-1]
-    
-    Notes
-    -----
-    The boundary points are used to enforce boundary conditions (typically ψ=0)
-    while x_internal contains the points where we actually solve for ψ.
-    
-    Examples
-    --------
-    >>> x, dx, x_int = make_grid(L=20, N=1000)
-    >>> print(f"Domain: [{x[0]:.1f}, {x[-1]:.1f}], spacing: {dx:.4f}")
-    Domain: [-10.0, 10.0], spacing: 0.0200
+        Internal grid points (N points)
     """
-    if L:
-        x = np.linspace(-L/2, L/2, N_GRID+2)
+    if L is not None:
+        x = np.linspace(-L/2, L/2, N+2)
+    elif x_min is not None and x_max is not None:
+        x = np.linspace(x_min, x_max, N+2)
     else:
-        x = np.linspace(x_min, x_max,N_GRID+2)
+        # Default fallback if nothing provided
+        print("Warning: No grid parameters provided. Using default L=20.")
+        L_default = 20.0
+        x = np.linspace(-L_default/2, L_default/2, N+2)
 
     dx = x[1] - x[0]
     x_internal = x[1:-1]
     return x, dx, x_internal
+
+
+# ==========================================
+# 2.5. SAFETY & UTILITY FUNCTIONS
+# ==========================================
+def check_boundary_proximity(x_internal, lower_bound, upper_bound, safety_margin=0.15):
+    """
+    Checks if the defined potential boundaries are too close to the computational 
+    grid boundaries (x_min, x_max). 
+
+    If the potential is too close, the implicit hard walls of the grid (where 
+    psi=0) will artificially constrain the wavefunction, leading to incorrect 
+    energy levels and distorted eigenstates (especially for finite wells/barriers).
+    
+    Parameters
+    ----------
+    x_internal : ndarray
+        The internal grid points (length N).
+    lower_bound : float
+        The left boundary of the physical potential feature (e.g., the well/barrier).
+    upper_bound : float
+        The right boundary of the physical potential feature.
+    safety_margin : float (0 to 1.0)
+        Minimum required padding on each side, expressed as a fraction of the 
+        total internal grid length. Default is 0.15 (15%).
+        
+    Returns
+    -------
+    str or None
+        A detailed WARNING message if proximity is detected, otherwise None.
+    """
+
+    """
+    Pili-Pili Note: x_int is your full grind array, lower bound and upper bound is 
+    your input potential, the Grid must be way larger usually!
+    """
+    x_int_min = x_internal[0]
+    x_int_max = x_internal[-1]
+    L_grid = x_int_max - x_int_min
+
+    # Calculate padding on each side
+    left_padding = lower_bound - x_int_min
+    right_padding = x_int_max - upper_bound
+    
+    # Define minimum required padding
+    min_padding_needed = L_grid * safety_margin
+    
+    if left_padding < min_padding_needed or right_padding < min_padding_needed:
+        # --- RAISE OUTPUT MESSAGE ---
+        return (
+            "\n"
+            "*** 🛑 Pili Pili WARNING: GRID BOUNDARY PROXIMITY 🛑 ***\n"
+            "The physical potential is too close to the numerical grid walls.\n"
+            f"Current Grid Range: [{x_int_min:.2f}, {x_int_max:.2f}].\n"
+            f"Potential Range: [{lower_bound:.2f}, {upper_bound:.2f}].\n"
+            f"Safety Margin is {safety_margin*100:.0f}% of grid length ({min_padding_needed:.2f} a.u.).\n"
+            "Impact: The implicit hard walls (psi=0) will artificially squeeze the "
+            "wavefunction (especially for finite wells), leading to inaccurate "
+            "energies (E will be too high) and incorrect wave function tails.\n"
+            "ACTION: Increase the grid length 'L' or adjust 'x_min'/'x_max' in make_grid().\n"
+            "********************************************\n"
+        )
+    return None
 
 # ==========================================
 # 3. POTENTIAL GENERATORS (V(x))
@@ -86,123 +155,130 @@ def constant(x, c):
     """
     return np.ones_like(x) * c
 
-def harmonic(x, k, center=0.0):
+def harmonic(x, k, center=0.0, wall_value=1e10):
     """
     Create a harmonic oscillator (parabolic) potential.
     
-    Generates V(x) = (1/2)k(x - center)² representing a quantum harmonic
-    oscillator potential centered at the specified position.
+    ALWAYS returns a full array (length N+2) with boundary walls built-in.
     
     Parameters
     ----------
     x : ndarray
-        Spatial grid points
+        Spatial grid points (the *internal* grid, length N)
     k : float
         Spring constant (curvature parameter) in atomic units
         Larger k → stiffer spring → more tightly bound states
     center : float, optional
         Center position of the parabola (default: 0.0)
+    wall_value : float, optional
+        Value for boundary walls (default: 1e10)
     
     Returns
     -------
-    V : ndarray
-        Harmonic potential array: V(x) = 0.5 * k * (x - center)²
+    V : ndarray (length N+2)
+        Harmonic potential with boundary walls: V(x) = 0.5 * k * (x - center)²
     
     Notes
     -----
     - Sets global variable Last_k_value for use by check_harmonic_analytic()
     - Energy levels: E_n = ℏω(n + 1/2) where ω = √(k/m)
     - In atomic units (ℏ=1, m=1): ω = √k
+    - Ready to use with solve() - no manual padding needed
     
     Examples
     --------
-    >>> x = np.linspace(-10, 10, 1000)
-    >>> V = harmonic(x, k=1.0, center=0.0)  # Standard QHO
-    >>> V_stiff = harmonic(x, k=10.0, center=0.0)  # Stiffer spring
-    >>> V_offset = harmonic(x, k=1.0, center=5.0)  # Centered at x=5
+    >>> x_int = np.linspace(-10, 10, 1000)
+    >>> V_full = harmonic(x_int, k=1.0)  # Returns N+2 array
+    >>> E, psi = solve(T, V_full, dx)
     """
     global Last_k_value
     Last_k_value = k
     
-    constant_factor = 1 
-    potential = 0.5 * k * (x - center)**2
-    return constant_factor * potential
+    V_int = 0.5 * k * (x - center)**2
+    return np.pad(V_int, (1, 1), constant_values=wall_value)
 
-def gaussian_well(x, center=0.0, width=1.0, depth=50): 
+def gaussian_well(x, center=0.0, width=1.0, depth=50, wall_value=1e10): 
     """
     Create a Gaussian-shaped potential well.
     
-    Generates a smooth, bell-shaped potential dip that can trap particles.
+    ALWAYS returns a full array (length N+2) with boundary walls built-in.
     
     Parameters
     ----------
     x : ndarray
-        Spatial grid points
+        Spatial grid points (the *internal* grid, length N)
     center : float, optional
         Center position of the well (default: 0.0)
     width : float, optional
         Width parameter (standard deviation) of the Gaussian (default: 1.0)
-        Larger width → broader well
     depth : float, optional
         Depth of the well at the center (default: 50)
-        Positive depth creates a well (attractive potential)
+    wall_value : float, optional
+        Value for boundary walls (default: 1e10)
     
     Returns
     -------
-    V : ndarray
-        Gaussian well potential: V(x) = -depth * exp(-(x-center)²/(2*width²))
-    
-    Notes
-    -----
-    - Minimum potential is -depth at x = center
-    - Potential approaches 0 as |x - center| → ∞
-    - Smooth potential (infinitely differentiable)
+    V : ndarray (length N+2)
+        Gaussian well with boundary walls: V(x) = -depth * exp(-(x-center)²/(2*width²))
     
     Examples
     --------
-    >>> x = np.linspace(-10, 10, 1000)
-    >>> V = gaussian_well(x, center=0, width=2.0, depth=10)
+    >>> x_int = np.linspace(-10, 10, 1000)
+    >>> V_full = gaussian_well(x_int, center=0, width=2.0, depth=10)
+    >>> E, psi = solve(T, V_full, dx)
     """
-    return -depth * np.exp(-(x - center)**2 / (2 * width**2))
+    V_int = -depth * np.exp(-(x - center)**2 / (2 * width**2))
+    return np.pad(V_int, (1, 1), constant_values=wall_value)
 
-def inf_square_well(x, lower_bound, upper_bound):
+def inf_square_well(x, lower_bound, upper_bound, wall_value=1e10):
     """
     Create an infinite square well (particle in a box) potential.
+    
+    ALWAYS returns a full array (length N+2) with boundary walls built-in.
     
     Parameters
     ----------
     x : ndarray
-        Spatial grid points
+        Spatial grid points (the *internal* grid, length N)
     lower_bound : float
         Left boundary of the well
     upper_bound : float
         Right boundary of the well
+    wall_value : float, optional
+        Value used for the infinite walls (default: 1e10)
     
     Returns
     -------
-    V : ndarray
-        Infinite square well potential:
-        - V(x) = 0 for lower_bound ≤ x ≤ upper_bound (inside well)
-        - V(x) = 10¹⁰ for x < lower_bound or x > upper_bound (outside well)
+    V : ndarray (length N+2)
+        Infinite square well potential with boundary walls:
+        - V(x) = 0 for lower_bound <= x <= upper_bound (inside well)
+        - V(x) = wall_value elsewhere (outside well and at boundaries)
     
     Notes
     -----
-    - Uses penalty method: "infinite" walls are approximated by very large
-      potential (10¹⁰) to enforce ψ ≈ 0 outside the well
+    - Uses penalty method: "infinite" walls are approximated by wall_value
     - Well width: L = upper_bound - lower_bound
-    - Analytical energies: E_n = (ℏ²π²n²)/(2mL²) for n = 1, 2, 3, ...
-    
+    - Analytical energies: E_n = (hbar^2 * pi^2 * n^2) / (2 * m * L^2)
+    - Ready to use with solve() - no manual padding needed
+   
     Examples
     --------
-    >>> x = np.linspace(-15, 15, 1000)
-    >>> V = inf_square_well(x, lower_bound=-10, upper_bound=10)  # L = 20
-    >>> # Use with check_ISW_analytic(E, lower_bound=-10, upper_bound=10)
+    >>> x_int = np.linspace(-15, 15, 1000)  # internal grid
+    >>> V_full = inf_square_well(x_int, lower_bound=-10, upper_bound=10)
+    >>> # Returns N+2 array, ready for solver
+    >>> E, psi = solve(T, V_full, dx)
     """
-    HUGE_NUMBER = 1e10
-    V = np.zeros_like(x) 
-    V[x <= lower_bound] = HUGE_NUMBER
-    V[x >= upper_bound] = HUGE_NUMBER
-    return V
+
+    warning = check_boundary_proximity(x, lower_bound, upper_bound)
+    if warning:
+        print(warning) 
+    # --------------------------
+
+
+    V_int = np.zeros_like(x) 
+    V_int[x <= lower_bound] = wall_value
+    V_int[x >= upper_bound] = wall_value
+    return np.pad(V_int, (1, 1), constant_values=wall_value)
 
 # Alias for backward compatibility (fixing typo)
 inf_sqaure_well = inf_square_well
@@ -238,6 +314,9 @@ def inf_wall(x, side, bound):
     >>> V_left = inf_wall(x, 'left', bound=-5)  # Wall at x=-5, blocks left side
     >>> V_right = inf_wall(x, 'right', bound=5)  # Wall at x=5, blocks right side
     """
+
+
+    
     V = np.zeros_like(x)
     HUGE_NUMBER = 9e10 
     side = side.strip(', . ').lower() 
@@ -248,80 +327,90 @@ def inf_wall(x, side, bound):
         V[x >= bound] = HUGE_NUMBER
     return V
 
-def finite_barrier(x, center, width, height):
+def finite_barrier(x, center, width, height, wall_value=1e10):
     """
     Create a finite rectangular potential barrier.
+    
+    ALWAYS returns a full array (length N+2) with boundary walls built-in.
     
     Parameters
     ----------
     x : ndarray
-        Spatial grid points
+        Spatial grid points (the *internal* grid, length N)
     center : float
         Center position of the barrier
     width : float
         Total width of the barrier
     height : float
         Height of the potential barrier
+    wall_value : float, optional
+        Value for boundary walls (default: 1e10)
     
     Returns
     -------
-    V : ndarray
-        Rectangular barrier potential:
+    V : ndarray (length N+2)
+        Rectangular barrier with boundary walls:
         - V(x) = height for |x - center| < width/2
-        - V(x) = 0 elsewhere
-    
-    Notes
-    -----
-    Useful for studying quantum tunneling phenomena. Particles with E < height
-    can tunnel through the barrier with exponentially decaying probability.
+        - V(x) = 0 elsewhere (inside domain)
+        - V(boundaries) = wall_value
     
     Examples
     --------
-    >>> x = np.linspace(-10, 10, 1000)
-    >>> V = finite_barrier(x, center=0, width=2, height=5)  # Barrier from x=-1 to x=1
+    >>> x_int = np.linspace(-10, 10, 1000)
+    >>> V_full = finite_barrier(x_int, center=0, width=2, height=5)
+    >>> E, psi = solve(T, V_full, dx)
     """
-    V = np.zeros_like(x)
-    mask = (x > (center - width/2)) & (x < (center + width/2))
-    V[mask] = height
-    return V
 
-def V_double_well(x, depth=20, separation=1, center=0.0):
+    lower_bound = center - width / 2.0
+    upper_bound = center + width / 2.0
+    # 🛑 Perform the safety check 🛑
+    warning = check_boundary_proximity(x, lower_bound, upper_bound)
+    if warning:
+        print(warning) 
+    # -----------------------------------------------    
+
+    V_int = np.zeros_like(x)
+    mask = (x > (center - width/2)) & (x < (center + width/2))
+    V_int[mask] = height
+    return np.pad(V_int, (1, 1), constant_values=wall_value)
+
+def V_double_well(x, depth=20, separation=1, center=0.0, wall_value=1e10):
     """
     Create a quartic double-well potential.
     
-    Generates V(x) = depth × ((x-center)² - separation)² which has two minima
-    separated by a central barrier.
+    ALWAYS returns a full array (length N+2) with boundary walls built-in.
     
     Parameters
     ----------
     x : ndarray
-        Spatial grid points
+        Spatial grid points (the *internal* grid, length N)
     depth : float, optional
         Depth parameter controlling overall potential strength (default: 20)
     separation : float, optional
         Controls the distance between the two wells (default: 1)
-        Well minima are approximately at x = center ± separation
     center : float, optional
         Center position of the double well system (default: 0.0)
+    wall_value : float, optional
+        Value for boundary walls (default: 1e10)
     
     Returns
     -------
-    V : ndarray
-        Double well potential: V(x) = depth × ((x-center)² - separation)²
+    V : ndarray (length N+2)
+        Double well with boundary walls: V(x) = depth × ((x-center)² - separation)²
     
     Notes
     -----
     - Creates symmetric double well with barrier at x = center
-    - Useful for studying tunneling splitting and symmetric/antisymmetric states
-    - Ground state and first excited state form tunneling doublet
+    - Useful for studying tunneling splitting
     
     Examples
     --------
-    >>> x = np.linspace(-5, 5, 1000)
-    >>> V = V_double_well(x, depth=2, separation=1, center=0)
+    >>> x_int = np.linspace(-5, 5, 1000)
+    >>> V_full = V_double_well(x_int, depth=2, separation=1)
+    >>> E, psi = solve(T, V_full, dx)
     """
-    V = depth * ((x - center)**2 - separation)**2
-    return V
+    V_int = depth * ((x - center)**2 - separation)**2
+    return np.pad(V_int, (1, 1), constant_values=wall_value)
 
 def custom2(value,x):
     """Helper function from the notebook."""
@@ -329,32 +418,61 @@ def custom2(value,x):
 
 # In psi_solve2/functions.py
 
-def finite_square_well(x, lower_bound, upper_bound, depth, pad=False, wall_value=1e10):
+def finite_square_well(x, lower_bound, upper_bound, depth, wall_value=1e10):
     """
     Create a finite square‑well potential.
+    
+    ALWAYS returns a full array (length N+2) with boundary walls built-in.
 
     Parameters
     ----------
     x : ndarray
-        Spatial grid points (the *internal* grid, length N).
+        Spatial grid points (the *internal* grid, length N)
     lower_bound, upper_bound : float
-        Left and right limits of the well (inclusive).
+        Left and right limits of the well
     depth : float
-        Positive number → the well depth (V = –depth inside).
-    pad : bool, optional
-        If True, the function returns a *full* array of length N+2 with
-        ``wall_value`` at the two outermost points.
+        Well depth (positive number; V = -depth inside)
     wall_value : float, optional
-        Value used for the boundary walls when ``pad=True``.
+        Value for boundary walls (default: 1e10)
+    
+    Returns
+    -------
+    V : ndarray (length N+2)
+        Finite square well with boundary walls:
+        - V(x) = -depth for lower_bound <= x <= upper_bound (inside well)
+        - V(x) = 0 for x outside well (classically forbidden region - ALLOWS TUNNELING)
+        - V(boundaries) = wall_value (computational boundaries only)
+    
+    Notes
+    -----
+    The finite well allows quantum tunneling:
+    - Particles with E < 0 are bound in the well
+    - Wavefunction exponentially decays in the region where V=0 (outside well)
+    - Infinite walls only at grid boundaries prevent numerical leakage
+    
+    Examples
+    --------
+    >>> x_int = np.linspace(-10, 10, 1000)
+    >>> V_full = finite_square_well(x_int, lower_bound=-2, upper_bound=2, depth=50)
+    >>> # Inside well: V=-50, Outside well: V=0, Boundaries: V=1e10
+    >>> E, psi = solve(T, V_full, dx)
     """
-    V = np.zeros_like(x)
-    V[x < lower_bound] = wall_value
-    V[x > upper_bound] = wall_value
-    V[(x >= lower_bound) & (x <= upper_bound)] = -depth
 
-    if pad:
-        V = np.pad(V, (1, 1), constant_values=wall_value)
-    return V
+    # GRID and Current Spacing Checker
+    warning = check_boundary_proximity(x, lower_bound, upper_bound)
+    if warning:
+        print(warning) 
+    # --------------------------
+
+
+    # Start with V=0 everywhere (classically forbidden region)
+    V_int = np.zeros_like(x)
+    
+    # Set well interior to -depth
+    V_int[(x >= lower_bound) & (x <= upper_bound)] = -depth
+    
+    # Add infinite walls ONLY at computational boundaries
+    return np.pad(V_int, (1, 1), constant_values=wall_value)
 
     
 # ==========================================
@@ -371,6 +489,7 @@ def kinetic_operator(N, dx, hbar=hbar, m=m):
     ----------
     N : int
         Number of internal grid points (size of the matrix)
+        - Piri Advice: If Unsure, use len(x_int) :)
     dx : float
         Grid spacing (distance between adjacent points)
     hbar : float, optional
@@ -397,6 +516,12 @@ def kinetic_operator(N, dx, hbar=hbar, m=m):
         - Upper/lower diagonals: +1/dx²
     
     The kinetic energy operator is then: T = -(ℏ²/2m) × D2
+
+    Note that, you much expected a stencil of just [1,-2,1] but depending 
+    on how what constants and especially your value for 1/dx^2. you will get 
+    a constant times the stencil 
+    - you think the Minus sign is reverse? think about where the -ve sign is applied,
+     inside or outside in your equation.
     
     Examples
     --------
@@ -481,9 +606,9 @@ def solve(T, V_full, dx):
         raise RuntimeError(
             "Failed to construct Hamiltonian: shape mismatch between kinetic operator "
             f"{T.shape} and potential diagonal {V_internal.shape}. "
-            "If you are using a finite square well, ensure the potential includes the two "
-            "boundary points (e.g., call finite_square_well(..., pad=True) or manually pad "
-            "with np.pad(V, (1,1), constant_values=1e10)."
+            "Pili Help: Are you giving solve x_int, make sure its x_int not x" \
+            "or do x[1:-1]" \
+            "or pad it"
         ) from e
     H = T + np.diag(V_internal)
 
@@ -533,6 +658,7 @@ def plot_V(V_raw_input):
     >>> fig = plot_V(V)
     >>> plt.show()
     """
+    import matplotlib.pyplot as plt
     if V_raw_input is None or np.ndim(V_raw_input) == 0:
         return None
 
@@ -571,61 +697,7 @@ def plot_V(V_raw_input):
     return fig
 
 
-def plot_alive(E, psi, V, x, no=1, nos=5, mode=''):
-    """
-    Plot wavefunctions as probability densities with separate energy and probability axes.
-    
-    Creates a physically accurate plot showing:
-    - Potential V(x) and energy levels on left y-axis
-    - Probability densities |ψ|² on right y-axis (separate scale)
-    - Color-synchronized between probability curves and energy levels
-    
-    Parameters
-    ----------
-    E : ndarray
-        Energy eigenvalues (in Hartree)
-    psi : ndarray, shape (N, M)
-        Wavefunction array where psi[:, i] is the i-th eigenstate
-    V : ndarray, shape (N+2,)
-        Full potential array including boundaries
-    x : ndarray, shape (N+2,)
-        Full spatial grid including boundaries
-    no : int, optional
-        State index to plot if mode != 'all' (default: 1)
-    nos : int, optional
-        Number of states to plot if mode == 'all' (default: 5)
-    mode : str, optional
-        Plot mode:
-        - 'all': Plot multiple states (first nos states)
-        - '': Plot single state (state no)
-        Default: '' (single state)
-    
-    Returns
-    -------
-    fig : matplotlib.figure.Figure
-        Figure object with dual y-axes
-        - ax1 (left): Energy/Potential scale
-        - ax2 (right): Probability density scale
-    
-    Notes
-    -----
-    - Uses dark background theme
-    - Probability densities are plotted as |ψ|², not ψ
-    - Each state has matching colors for its probability curve and energy level
-    - Regions where V > 10⁵ are hidden (infinite walls)
-    
-    """
-    """    
-    Examples
-    --------
-    >>> # Plot first 5 states
-    >>> fig = plot_alive(E, psi, V_full, x_full, nos=5, mode='all')
-    >>> plt.show()
-    >>> 
-    >>> # Plot only ground state
-    >>> fig = plot_alive(E, psi, V_full, x_full, no=0)
-    >>> plt.show()
-    """
+#def plot_alive(E, psi, V, x, no=1, nos=5, mode=''):
     import matplotlib.pyplot as plt
     
     plt.style.use("dark_background")
@@ -711,9 +783,313 @@ def plot_alive(E, psi, V, x, no=1, nos=5, mode=''):
     plt.tight_layout()
     return fig
 
-def plot_dead(E, psi, V, x, nos=5):
-    """Textbook: wavefunctions vertically shifted by energy."""
+#def plot_dead(E, psi, V, x, no=1, nos=5, mode='', scale=1.0):
+    import matplotlib.pyplot as plt
+    
     plt.style.use("dark_background")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Clip potential for plotting if it has infinite walls
+    V_plot = V.copy()
+    if len(E) > 0:
+        max_E = E[min(nos, len(E))-1] if mode == 'all' else E[no]
+        cutoff = max(max_E * 2.0, 1.0)
+        V_plot = np.clip(V, -np.inf, cutoff)
+    
+    # Plot Potential
+    ax.plot(x, V_plot, color="white", lw=2, label="V(x)", alpha=0.7)
+    
+    # Determine states to plot
+    if mode == 'all':
+        indices = range(min(nos, len(E)))
+    else:
+        indices = [no]
+        
+    # Plot States
+    for n in indices:
+        if n >= len(E): break
+        
+        color = plt.colormaps["tab20"].colors[n % 20]
+        
+        # Scale wavefunction for visibility and shift by energy
+        # We use a heuristic for scale if not provided, but here we use the param
+        # A good heuristic might be (max(V_plot) - min(V_plot)) / 10 / max(psi)
+        
+        psi_shifted = psi[:, n] * scale + E[n]
+        
+        ax.plot(x[1:-1], psi_shifted, color=color, lw=1.5, label=f"$\psi_{{{n}}}$ (E={E[n]:.2f})")
+        ax.axhline(E[n], color=color, linestyle="--", lw=0.5, alpha=0.5)
+        
+    ax.set_xlabel("Position x [a.u.]")
+    ax.set_ylabel("Energy [Ha]")
+    ax.set_title("Textbook View: Wavefunctions Shifted by Energy")
+    ax.legend(loc="upper right", fontsize=8)
+    
+    return fig
+
+# ==========================================
+# 5. PLOTTING FUNCTIONS (UPDATED)
+# ==========================================
+
+#def plot_alive(E, psi, V, x, no=1, nos=5, mode='', educate=False):
+    """
+    Plot wavefunctions as probability densities with separate energy and probability axes.
+    
+    Creates a physically accurate plot showing:
+    - Potential V(x) and energy levels on left y-axis
+    - Probability densities |ψ|² on right y-axis (separate scale)
+    - Color-synchronized between probability curves and energy levels
+    
+    Parameters
+    ----------
+    E : ndarray
+        Energy eigenvalues (in Hartree)
+    psi : ndarray, shape (N, M)
+        Wavefunction array where psi[:, i] is the i-th eigenstate
+    V : ndarray, shape (N+2,)
+        Full potential array including boundaries
+    x : ndarray, shape (N+2,)
+        Full spatial grid including boundaries
+    no : int, optional
+        State index to plot if mode != 'all' (default: 1)
+    nos : int, optional
+        Number of states to plot if mode == 'all' (default: 5)
+    mode : str, optional
+        Plot mode:
+        - 'all': Plot multiple states (first nos states)
+        - '': Plot single state (state no)
+        Default: '' (single state)
+    
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object with dual y-axes
+        - ax1 (left): Energy/Potential scale
+        - ax2 (right): Probability density scale
+    
+    Notes
+    -----
+    - Uses dark background theme
+    - Probability densities are plotted as |ψ|², not ψ
+    - Each state has matching colors for its probability curve and energy level
+    - Regions where V > 10⁵ are hidden (infinite walls)
+    
+    """
+    """    
+    Examples
+    --------
+    >>> # Plot first 5 states
+    >>> fig = plot_alive(E, psi, V_full, x_full, nos=5, mode='all')
+    >>> plt.show()
+    >>> 
+    >>> # Plot only ground state
+    >>> fig = plot_alive(E, psi, V_full, x_full, no=0)
+    >>> plt.show()
+    """
+    
+    
+    import matplotlib.pyplot as plt
+    
+    plt.style.use("dark_background")
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    
+    ax2 = ax1.twinx()  # Right axis for probability
+    
+    states = min(nos, len(E))
+    x_solver = x[1:-1]
+    
+    # Clip Potential for visibility (so infinite walls don't squash the view)
+    if len(E) > 0:
+        max_E = E[states-1] if mode == 'all' else E[no]
+        cutoff = max(max_E * 2.0, 1.0)
+        V_plot = np.clip(V, -np.inf, cutoff)
+    else:
+        V_plot = V
+
+    # --- Plot Potential ---
+    ax1.plot(x, V_plot, color="white", lw=2, label="V(x)", alpha=0.7)
+
+    # --- Plot wavefunctions ---
+    if mode == 'all':
+        for n in range(states):
+            # Synchronized color
+            color = plt.colormaps["tab20"].colors[n % 20]
+            
+            psi_n_sq = psi[:, n]**2
+            
+            # 1. Plot probability density (Right Axis)
+            ax2.plot(
+                x_solver, psi_n_sq,
+                label=rf"$|\psi_{n}|^2$ (E={E[n]:.2f})",
+                lw=1.2,
+                color=color
+            )
+            
+            # 2. Plot energy line (Left Axis)
+            ax1.axhline(E[n], linestyle="--", lw=0.8, alpha=0.8, color=color)
+            
+    else:
+        # Single state mode
+        n = no
+        color = plt.colormaps["tab20"].colors[n % 20]
+        psi_n_sq = psi[:, n]**2
+        
+        # 1. Plot probability density (Right Axis)
+        ax2.plot(
+            x_solver, psi_n_sq,
+            label=rf"$|\psi_{no}|^2$ (E={E[no]:.2f})",
+            lw=1.2,
+            color=color
+        )
+        
+        # 2. Plot energy line (Left Axis)
+        ax1.axhline(E[no], linestyle="--", lw=0.8, alpha=0.8, color=color)
+        
+    # Formatting
+    ax1.set_xlabel("x [a.u.]")
+    ax1.set_ylabel("Energy / V(x) [Hartree]")
+    ax2.set_ylabel(r"Physical Probability Density $|\psi|^2$")
+    ax1.set_title("Physically Accurate Representation")
+
+    # Legend handling for twin axes
+    h1, l1 = ax1.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    ax1.legend(h1+h2, l1+l2, loc="upper right", fontsize=8)
+    
+    # --- EDUCATIONAL ANNOTATION ---
+    if educate:
+        text_str = (
+            "PHYSICS NOTE:\n"
+            "This plot is physically accurate.\n"
+            "1. The LEFT axis shows Energy and Potential.\n"
+            "2. The RIGHT axis shows Probability Density.\n"
+            "3. The height of the wave corresponds to the \n"
+            "   actual probability of finding the particle."
+        )
+        # Place text box in upper left
+        ax1.text(0.02, 0.95, text_str, transform=ax1.transAxes, fontsize=9,
+                 verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.2, edgecolor='white'))
+    
+    plt.tight_layout()
+    return fig
+
+
+#def plot_dead(E, psi, V, x, no=1, nos=5, mode='', scale=1.0, educate=False):
+    """
+    Textbook-style plot: wavefunctions vertically shifted by their energy levels.
+    
+    Plots psi_n * scale + E_n.
+    
+    Parameters
+    ----------
+    E : ndarray
+        Energy eigenvalues
+    psi : ndarray
+        Wavefunction eigenvectors
+    V : ndarray
+        Potential array
+    x : ndarray
+        Spatial grid
+    no : int
+        State index to plot (if mode != 'all')
+    nos : int
+        Number of states to plot (if mode == 'all')
+    mode : str
+        'all' to plot multiple states, otherwise single state
+    scale : float
+        Scaling factor for wavefunction visibility
+        
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    """
+
+    import matplotlib.pyplot as plt
+    
+    plt.style.use("dark_background")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    states = min(nos, len(E))
+    x_solver = x[1:-1]
+
+    # Clip Potential
+    if len(E) > 0:
+        max_E = E[states-1] if mode == 'all' else E[no]
+        cutoff = max(max_E * 2.0, 1.0)
+        V_plot = np.clip(V, -np.inf, cutoff)
+    else:
+        V_plot = V
+
+    # --- Plot Potential ---
+    ax.plot(x, V_plot, color="white", lw=2, label="V(x)", alpha=0.7)
+
+    # --- Plot Stacked Wavefunctions ---
+    # Heuristic scaling: make the wave amplitude roughly 10-15% of the energy gap or visible space
+    # If scale=1.0, we try to auto-scale.
+    if len(E) > 1:
+        avg_gap = np.mean(np.diff(E[:states]))
+        auto_scale = avg_gap * 0.5 * scale 
+    else:
+        auto_scale = 1.0 * scale
+
+    if mode == 'all':
+        for n in range(states):
+            color = plt.colormaps["tab20"].colors[n % 20]
+            
+            # Stack: Energy + (Probability * Scale)
+            # This makes the "baseline" of the wave the energy level
+            psi_shifted = E[n] + (psi[:, n]**2 * auto_scale * 5) 
+            
+            ax.plot(x_solver, psi_shifted, color=color, lw=1.2, label=rf"$\psi_{n}$ (shifted)")
+            
+            # Energy Bar
+            ax.axhline(E[n], linestyle="--", lw=0.8, alpha=0.8, color=color)
+
+    else:
+        # Single state
+        n = no
+        color = plt.colormaps["tab20"].colors[n % 20]
+        
+        psi_shifted = E[n] + (psi[:, n]**2 * auto_scale * 5)
+        
+        ax.plot(x_solver, psi_shifted, color=color, lw=1.2, label=rf"$\psi_{no}$ (shifted)")
+        
+        # Energy Bar
+        ax.axhline(E[n], linestyle="--", lw=0.8, alpha=0.8, color=color)
+
+    # Formatting
+    ax.set_xlabel("x [a.u.]")
+    
+    # 🛑 NO UNITS REQUEST: We label it to indicate it's a mix of Energy and Arbitrary scaling
+    ax.set_ylabel("Energy + Arbitrary Scale (No Physical Units)")
+    ax.set_title("Schematic / Textbook Representation (Stacked)")
+    
+    # Remove y-ticks to emphasize "No Units" for the waves, 
+    # or keep them just for the Potential/Energy levels roughly.
+    # To be safe regarding your prompt ("must not have units!"), we hide the specific numbers 
+    # if they are confusing, but usually, we need to see the Energy value.
+    # We will leave ticks but rely on the Axis Label to warn the user.
+
+    ax.legend(loc="upper right", fontsize=8)
+
+    # --- EDUCATIONAL ANNOTATION ---
+    if educate:
+        text_str = (
+            "EDUCATIONAL WARNING:\n"
+            "This is a 'Textbook' schematic.\n"
+            "1. Wavefunctions are vertically shifted to sit\n"
+            "   on their energy levels.\n"
+            "2. The wave height is SCALED ARBITRARILY for\n"
+            "   visualization and has NO physical unit.\n"
+            "3. Do not read the Y-axis value of the wave peak\n"
+            "   as a specific energy or probability."
+        )
+        ax.text(0.02, 0.95, text_str, transform=ax.transAxes, fontsize=9,
+                 verticalalignment='top', bbox=dict(boxstyle='round', facecolor='tomato', alpha=0.3, edgecolor='white'))
+
+    plt.tight_layout()
+    return fig
+
 # ==========================================
 # 7. EDUCATIONAL ANALYSIS
 # ==========================================
@@ -781,8 +1157,15 @@ def analyze_state(E_n, psi_n, V, x, threshold=None):
     forbidden_mask = V_internal > E_n
     
     # Calculate probability in forbidden regions
-    prob_density = psi_n**2
+    prob_density = abs(psi_n)**2
     prob_forbidden = np.sum(prob_density[forbidden_mask]) * dx
+
+    """
+    Pili Explain
+    # 1. Selects only the densities where V > E
+    # 2. Sums them up
+    # 3. Multiplies by the grid spacing (dx) to approximate the integral
+    """
     
     # Calculate total probability (should be ~1.0)
     total_prob = np.sum(prob_density) * dx
@@ -822,7 +1205,7 @@ def generate_educational_feedback(E, psi, V, x, state_idx=0):
             
     return "\n".join(report)
 
-def plot_educational(E, psi, V, x, no=0):
+def plot_educate(E, psi, V, x, no=0):
     """
     Enhanced plotting with educational feedback.
     """
@@ -838,6 +1221,488 @@ def plot_educational(E, psi, V, x, no=0):
              bbox=dict(boxstyle="round,pad=0.5", fc="white", ec="black", alpha=0.8))
              
     return fig
+
+#######
+# ==========================================
+# 7. EDUCATIONAL ANALYSIS HELPER FUNCTIONS
+# (Must be defined before the plotting functions)
+# ==========================================
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ==========================================
+# 7. EDUCATIONAL ANALYSIS HELPER FUNCTIONS
+# ==========================================
+
+def analyze_potential(V, x):
+    """Analyze the potential to provide educational feedback."""
+    feedback = []
+    # Check for constant potential
+    if np.allclose(V, V[0]):
+        feedback.append("The potential is constant everywhere. This simulates a free particle.")
+        return feedback
+
+    HUGE_VAL = 1e5
+    # Check for "Infinite Square Well" filling the grid
+    V_internal = V[1:-1]
+    if np.all(V_internal == 0) and (V[0] > HUGE_VAL or V[-1] > HUGE_VAL):
+        feedback.append("System: Infinite Square Well.")
+        feedback.append("Note: If the well width equals the grid width, you will only see a flat line.")
+
+    return feedback
+
+
+def analyze_state(E_n, psi_n, V, x, threshold=0.01):
+    """Analyze a specific quantum state."""
+    feedback = []
+    dx = x[1] - x[0]
+    
+    # 1. Check if Bound State (compare to walls)
+    V_left = V[0]
+    V_right = V[-1]
+    min_wall = min(V_left, V_right)
+    
+    if E_n < min_wall:
+        feedback.append(f"State: BOUND (E = {E_n:.4f} < Wall Height).")
+    else:
+        feedback.append(f"State: SCATTERING/UNBOUND (E = {E_n:.4f} > Wall Height).")
+        
+    # 2. Check for Tunneling in classically forbidden regions (V > E)
+    V_internal = V[1:-1]
+    forbidden_mask = V_internal > E_n
+    
+    prob_density = psi_n**2
+    prob_forbidden = np.sum(prob_density[forbidden_mask]) * dx
+    total_prob = np.sum(prob_density) * dx  # Should be ~1
+    
+    if total_prob > 0 and prob_forbidden > threshold * total_prob:
+        feedback.append(f"TUNNELING: {prob_forbidden*100:.1f}% probability in classically forbidden regions.")
+    
+    return feedback
+
+
+def generate_educational_feedback(E, psi, V, x, state_idx=0):
+    """Generate a comprehensive text report for the user."""
+    report = []
+    
+    # Potential Analysis
+    pot_feedback = analyze_potential(V, x)
+    for msg in pot_feedback:
+        report.append(f"• {msg}")
+        
+    if len(E) == 0:
+        report.append("• NO STATES FOUND! Try increasing the well depth or width.")
+        return "\n".join(report)
+        
+    # Clamp index
+    if state_idx < 0:
+        state_idx = 0
+    if state_idx >= len(E):
+        state_idx = len(E) - 1
+    
+    # State Analysis
+    state_feedback = analyze_state(E[state_idx], psi[:, state_idx], V, x)
+    for msg in state_feedback:
+        report.append(f"• {msg}")
+            
+    return "\n".join(report)
+
+
+
+
+# ==========================================
+# 5. PLOTTING FUNCTIONS (MERGED / FINAL)
+# ==========================================
+
+# Small helper: consistent colormap access
+def _state_color(n):
+    import matplotlib.pyplot as plt
+    cmap = plt.colormaps["tab20"]
+    return cmap.colors[n % len(cmap.colors)]
+
+def auto_xlim_from_probability(x_full, psi, frac=1e-4, padding=1.0):
+    """
+    Determine xmin and xmax from where the *total* probability density 
+    falls below a threshold fraction of its maximum.
+    """
+    x_full = np.asarray(x_full)
+
+    if psi is None or psi.size == 0:
+        return x_full[0], x_full[-1]
+
+    # Internal grid (wavefunctions only exist here)
+    x_internal = x_full[1:-1]
+
+    # Compute total probability
+    psi2 = abs(psi)**2
+    if psi2.ndim == 1:   # Single state
+        prob_total = psi2
+    else:
+        prob_total = np.sum(psi2, axis=1)
+
+    # Threshold
+    threshold = frac * prob_total.max()
+    if threshold <= 0:
+        return x_full[0], x_full[-1]
+
+    # Find support region
+    active = np.where(prob_total > threshold)[0]
+    if active.size == 0:
+        return x_full[0], x_full[-1]
+
+    xmin = max(x_internal[active[0]] - padding, x_full[0])
+    xmax = min(x_internal[active[-1]] + padding, x_full[-1])
+
+    return xmin, xmax
+
+
+
+
+def plot_alive(E, psi, V, x, no=1, nos=5, mode='', educate=False):
+    """
+    Physically accurate plot with dual y-axes + side energy bar.
+    Automatic multi-state behavior:
+        - If nos > 1 → plot first `nos` states (ignore `no`)
+        - If nos <= 1 → plot only state `no`
+        - mode='all' still explicitly forces multi-state
+
+    Parameters
+    ----------
+    E : array_like
+    psi : array_like
+    V : array_like
+    x : array_like
+    no : int, optional
+        Index of state for single-plot mode
+    nos : int, optional
+        Max number of states to plot
+    mode : {'', 'all'}, optional
+    educate : bool, optional
+    """
+
+    """
+    Pili Physics Note:
+    Why the Alive Accurate plot wont show V(x) or stack them
+    -----------------------
+
+    The vertical value of ψ(x) or |ψ(x)|² does *not* represent energy.
+
+    • |ψ(x)|² is a *probability density*:
+        |ψ(x)|² dx  →  probability of finding the particle near x
+
+    • V(x) is an *energy*:
+        V(x) → potential energy (e.g., Joules, Hartree)
+
+    Therefore, wavefunctions and potentials do **not share the same physical y-units**.
+    Overlaying ψ(x) on top of V(x) (as in many textbooks) is purely *symbolic*:
+
+        - ψ(x) is arbitrarily scaled for visualization
+        - tall wavefunction peaks do *not* imply the particle has high energy
+        - ψ(x) rising above the well does *not* mean the particle escaped
+
+    Correct physical interpretation:
+        - Energy levels and potential should be plotted on one axis
+        - Probability density on a separate axis
+
+    Our plotting functions follow this principle by using dual y-axes.
+    """
+   
+    import matplotlib.pyplot as plt
+    plt.style.use("dark_background")
+
+    # Handle empty spectrum
+    if len(E) == 0:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.set_title("No bound states found")
+        return fig
+
+    # Decide whether we are in multi-state or single-state mode
+    plot_multi = (nos > 1) or (mode == 'all')
+
+    # Clamp indices
+    no = max(0, min(no, len(E) - 1))
+    states = min(nos, len(E))
+    x_solver = x[1:-1]
+
+    # --- Figure + axes
+    fig, (ax_prob, ax_bar) = plt.subplots(
+        1, 2, figsize=(12, 7),
+        gridspec_kw={"width_ratios": [5, 1]}
+    )
+    # Hidden twin axis for energy lines on the main plot
+    ax_energy = ax_prob.twinx()
+
+    # --- Plot wavefunctions (probability) on main axis
+    if plot_multi:
+        for n in range(states):
+            c = _state_color(n)
+            psi2 = np.abs(psi[:, n])**2
+            ax_prob.plot(
+                x_solver, psi2,
+                lw=1.2, color=c,
+                label=rf"$|\psi_{n}(x)|^2$ (E={E[n]:.2f})"
+            )
+            # energy line on the energy axis (not on the probability axis)
+            ax_energy.axhline(E[n], color=c, lw=0.8, linestyle=":", alpha=0.7)
+    else:
+        c = _state_color(no)
+        psi2 = np.abs(psi[:, no])**2
+        ax_prob.plot(
+            x_solver, psi2,
+            lw=1.4, color=c,
+            label=rf"$|\psi_{no}(x)|^2$ (E={E[no]:.2f})"
+        )
+        ax_energy.axhline(E[no], color=c, lw=1.0, linestyle=":")
+
+    # --- Auto x-limits using the states that are actually plotted
+    if plot_multi:
+        xmin, xmax = auto_xlim_from_probability(x, psi[:, :states])
+    else:
+        xmin, xmax = auto_xlim_from_probability(x, psi[:, [no]])
+
+    ax_prob.set_xlim(xmin, xmax)
+    ax_energy.set_xlim(xmin, xmax)
+
+    # Hide the energy axis ticks on the main plot
+    ax_energy.set_yticks([])
+
+    # --- Spectrum bar on the right (with energy y-axis)
+    ax_bar.set_title("Energy Spectrum")
+    ax_bar.set_xticks([])
+    ax_bar.set_ylabel("Energy (Hartree)")
+
+    spec_states = range(states) if plot_multi else [no]
+    Es = E[:states] if plot_multi else [E[no]]
+
+    Emin = min(Es)
+    Emax = max(Es)
+    span = (Emax - Emin) if Emax > Emin else max(abs(Emax), 1.0)
+    ax_bar.set_ylim(Emin - 0.15 * span, Emax + 0.15 * span)
+
+    for n in spec_states:
+        c = _state_color(n)
+        ax_bar.axhline(E[n], lw=2, color=c)
+        if states <= 20:
+            ax_bar.text(
+                0.1, E[n], f"{E[n]:.2f}",
+                color=c, va='center', fontsize=8,
+                transform=ax_bar.transData
+            )
+
+    # --- Labels and legend
+    ax_prob.set_xlabel("x [a.u.]")
+    ax_prob.set_ylabel(r"$|\psi(x)|^2$")  # main plot y-axis = probability
+    ax_prob.set_title("Bound States: Probability Density + Energy Levels")
+
+    handles, labels = ax_prob.get_legend_handles_labels()
+    ax_prob.legend(handles, labels, loc="upper right", fontsize=7)
+
+    # ---- educational panel (this is what was missing) ----
+    if educate:
+        # leave space at the bottom for text
+        fig.subplots_adjust(bottom=0.25, wspace=0.35)
+        # if plotting many states, talk about the ground state (index 0);
+        # if plotting one, talk about `no`
+        target_state = 0 if plot_multi else no
+        feedback_text = generate_educational_feedback(
+            E, psi, V, x, state_idx=target_state
+        )
+        fig.text(
+            0.5, 0.02, feedback_text,
+            ha='center', va='bottom', fontsize=10, color='black',
+            bbox=dict(boxstyle="round,pad=0.5", fc="white", ec="black", alpha=0.9)
+        )
+    else:
+        fig.subplots_adjust(wspace=0.35)
+
+    fig.tight_layout()
+    return fig
+
+
+def plot_dead(E, psi, V, x, no=1, nos=5, mode='', scale=1.0, educate=False):
+    """
+    Textbook-style schematic plot (symbolic, not to scale in energy):
+
+    - Wavefunctions are vertically shifted and stacked around their energies.
+    - Side panel shows the corresponding energy spectrum.
+    
+    Behaviour:
+        * If nos > 1  or mode == 'all'  → plot first `nos` states.
+        * If nos <= 1 and mode != 'all' → plot only state `no`.
+
+    Parameters
+    ----------
+    E, psi, V, x : arrays from the solver.
+        E      : shape (n_states,)
+        psi    : shape (N_internal, n_states)
+        V, x   : full grid including boundaries (N_internal+2,)
+    no : int, optional
+        Index of state to show in single-state mode.
+    nos : int, optional
+        Number of *lowest* states to draw in multi-state mode.
+    mode : {'', 'all'}, optional
+        If 'all', force multi-state behaviour.
+    scale : float, optional
+        Extra vertical scaling for the stacked wavefunctions.
+    educate : bool, optional
+        If True, draw a text panel using generate_educational_feedback().
+    """
+
+    """
+    Pili Physics Note – stacked plots:
+
+    V(x) has units of energy, while |ψ(x)|² dx is a probability.
+
+    In this schematic plot we *artificially* scale and vertically shift ψ(x)
+    so each eigenstate sits near its own energy. The wavefunction height here
+    does NOT represent energy, only a visual guide to:
+        • where the particle is likely to be,
+        • how many nodes the state has,
+        • how states relate to the well shape.
+
+    This is a symbolic visualisation, not a literal energy–probability plot.
+    """
+
+    import matplotlib.pyplot as plt
+    plt.style.use("dark_background")
+
+    # Handle empty spectrum
+    if len(E) == 0:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(x, V, color="white", lw=2, label="V(x)")
+        ax.set_xlabel("x [a.u.]")
+        ax.set_ylabel("Energy / V(x)")
+        ax.set_title("No eigenstates to display")
+        ax.legend(loc="upper right", fontsize=8)
+
+        if educate:
+            fig.subplots_adjust(bottom=0.25)
+            feedback_text = generate_educational_feedback(E, psi, V, x, state_idx=0)
+            fig.text(
+                0.5, 0.02, feedback_text,
+                ha='center', va='bottom', fontsize=10, color='black',
+                bbox=dict(boxstyle="round,pad=0.5", fc="white", ec="black", alpha=0.9)
+            )
+        else:
+            fig.tight_layout()
+        return fig
+
+    # Clamp state index
+    no = max(0, min(no, len(E) - 1))
+
+    # How many states are available / requested
+    states = min(nos, len(E))
+    if states <= 0:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.set_title("No eigenstates to display")
+        return fig
+
+    # Decide plotting mode
+    plot_multi = (nos > 1) or (mode == 'all')
+
+    # Indices of the states we actually plot
+    if plot_multi:
+        indices = list(range(states))      # 0,1,...,states-1
+    else:
+        indices = [no]                    # only the requested state
+
+    x_solver = x[1:-1]
+    V_internal = V[1:-1]
+
+    # Layout: main schematic + energy bar
+    fig, (ax_main, ax_bar) = plt.subplots(
+        1, 2, figsize=(12, 7),
+        gridspec_kw={"width_ratios": [5, 1]}
+    )
+    fig.subplots_adjust(wspace=0.35)
+
+    # ----- Vertical scaling based on the states we actually draw -----
+    Es_plot = [E[i] for i in indices]
+
+    if len(indices) > 1:
+        # Use spacing between first two plotted levels as a scale
+        base_scale = (Es_plot[1] - Es_plot[0]) * 0.4
+    else:
+        # Single state: scale relative to its own energy
+        base_scale = max(abs(Es_plot[0]) * 0.1, 0.5)
+    base_scale *= scale
+
+    max_E = max(Es_plot)
+    window_height = max_E * 1.5 if max_E != 0 else 1.0
+
+    # 1. Plot shifted / normalized wavefunctions
+    for n in indices:
+        psi_n = psi[:, n]
+        maxabs = float(np.max(np.abs(psi_n))) if np.any(psi_n) else 1.0
+        psi_norm = psi_n / (maxabs if maxabs != 0 else 1.0)
+
+        y = psi_norm * base_scale + E[n]
+
+        # Hide values inside "infinite" walls for cleaner look
+        y[V_internal > 1e5] = np.nan
+
+        color = _state_color(n)
+        ax_main.plot(
+            x_solver, y,
+            lw=1.3,
+            color=color,
+            label=f"n={n}, E={E[n]:.2f}"
+        )
+
+    # 2. Plot potential, clipped to window
+    V_clip = np.clip(V, np.min(V), window_height)
+    ax_main.plot(x, V_clip, color="white", lw=2, label="V(x)")
+
+    # Auto x-limits based on the plotted states
+    psi_subset = psi[:, indices] if len(indices) > 1 else psi[:, [indices[0]]]
+    xmin, xmax = auto_xlim_from_probability(x, psi_subset)
+    ax_main.set_xlim(xmin, xmax)
+
+    # Main axis formatting
+    ax_main.set_title("Schematic Representation (Stacked Eigenstates)")
+    ax_main.set_xlabel("x [a.u.]")
+    ax_main.set_ylabel("Energy + arbitrary scale")
+    ax_main.set_yticks([])  # no physical units on y-axis
+    ax_main.legend(fontsize=8, loc="upper right")
+
+    # 3. Energy spectrum bar (matching the plotted states)
+    ax_bar.set_title("Energy Spectrum")
+    ax_bar.set_xticks([])
+
+    Emin = float(min(Es_plot))
+    Emax = float(max(Es_plot))
+    span = Emax - Emin if Emax > Emin else max(abs(Emax), 1.0)
+    ax_bar.set_ylim(Emin - 0.1 * span, Emax + 0.1 * span)
+
+    for n in indices:
+        color = _state_color(n)
+        ax_bar.axhline(E[n], lw=1.5, color=color)
+        if len(indices) < 10:
+            ax_bar.text(
+                0.1, E[n], f"{E[n]:.2f}",
+                color=color, va='center', fontsize=8,
+                transform=ax_bar.transData
+            )
+
+    # 4. Educational feedback
+    if educate:
+        fig.subplots_adjust(bottom=0.25, wspace=0.35)
+        # In multi-state mode, describe ground state; otherwise describe `no`
+        target_state = indices[0]
+        feedback_text = generate_educational_feedback(E, psi, V, x, state_idx=target_state)
+        fig.text(
+            0.5, 0.02, feedback_text,
+            ha='center', va='bottom', fontsize=10, color='black',
+            bbox=dict(boxstyle="round,pad=0.5", fc="white", ec="black", alpha=0.9)
+        )
+    else:
+        fig.subplots_adjust(wspace=0.35)
+
+    return fig
+
+
+######
+
 
 # ==========================================
 # 6. BENCHMARKING FUNCTIONS
@@ -1656,7 +2521,7 @@ def verify_solver():
     
     x_fsw, dx_fsw, x_int_fsw = make_grid(L=L_fsw, N=N_fsw)
     
-    V_int_fsw = finite_square_well(x_int_fsw, lower_bound=-10, upper_bound=10, depth_V=V0_fsw)
+    V_int_fsw = finite_square_well(x_int_fsw, lower_bound=-10, upper_bound=10, depth=V0_fsw)
     V_fsw = np.zeros_like(x_fsw)
     V_fsw[1:-1] = V_int_fsw
     V_fsw[0] = 1e10
@@ -1881,14 +2746,6 @@ def run_verification():
 
 
 
-def display_params(frame, params_list, start_y=80, line_height=25, color=(255, 255, 255)):
-    import cv2
-    for i, text in enumerate(params_list):
-        y = start_y + i * line_height
-        cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6, (0, 0, 0), 3)
-        cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6, color, 2)
 
 
 # ---------------------------------------------------------------------
@@ -1901,211 +2758,6 @@ def display_params(frame, params_list, start_y=80, line_height=25, color=(255, 2
 
 
 
-def capture_potential(tune, A_MIN, A_MAX, mode='wait'):
-    import cv2
-    import mediapipe as mp
-    
-    mp_hands = mp.solutions.hands
-    hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.7)
-    drawer = mp.solutions.drawing_utils
-
-    cap = cv2.VideoCapture(0)
-    captured_V = None
-
-    # Stability tracking -----------------------------------------------
-    stability_counter = 0
-    REQUIRED_STABLE_FRAMES = 45
-    MOVEMENT_THRESHOLD = 0.015
-    prev_landmarks = []
-
-    # Landmark indices --------------------------------------------------
-    THUMB_TIP_ID = 4
-    INDEX_TIP_ID = 8
-
-    # QHO Mapping constants --------------------------------------------
-    D_MIN = 0.001
-    D_MAX = 0.2
-
-    D_RANGE = D_MAX - D_MIN
-    A_RANGE = A_MAX - A_MIN
-
-    SLOPE = -A_RANGE / D_RANGE
-    INTERCEPT = A_MAX - SLOPE * D_MIN
-
-    # Fixed visual scale (independent of physics range)
-    PLOT_CEILING_A = 10.0
-    EPS = 1e-9
-
-    print("Controls: HOLD STILL to capture, or press 'q' to quit.")
-
-    # =================================================================
-    # MAIN LOOP
-    # =================================================================
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        frame = cv2.flip(frame, 1)
-        h, w, _ = frame.shape
-
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        res = hands.process(rgb)
-
-        pot_profile = None
-        mode_msg = "No Hands"
-        params_to_display = []
-        current_landmarks_flat = []
-
-        # --------------------------------------------------------------
-        # LANDMARK PROCESSING
-        # --------------------------------------------------------------
-        if res.multi_hand_landmarks:
-
-            # Flatten positions for stability detection
-            for hand_lms in res.multi_hand_landmarks:
-                for lm in hand_lms.landmark:
-                    current_landmarks_flat.extend([lm.x, lm.y])
-
-            # Draw detected hands
-            for lm in res.multi_hand_landmarks:
-                drawer.draw_landmarks(frame, lm, mp_hands.HAND_CONNECTIONS)
-
-            # ----------------------------------------------------------
-            # TWO HANDS = SQUARE WELL (AUTO-CENTERED)
-            # ----------------------------------------------------------
-            if len(res.multi_hand_landmarks) >= 2:
-                mode_msg = "Mode: Square Well (Auto-Centered)"
-
-                # 1. Get Hand Positions
-                x_coords = [
-                    lm.landmark[INDEX_TIP_ID].x * w
-                    for lm in res.multi_hand_landmarks
-                ]
-                x_coords.sort()
-                xL_hand, xR_hand = int(x_coords[0]), int(x_coords[1])
-
-                # 2. Draw Yellow lines at REAL hand positions (Visual Feedback)
-                cv2.line(frame, (xL_hand, 0), (xL_hand, h), (0, 255, 255), 2)
-                cv2.line(frame, (xR_hand, 0), (xR_hand, h), (0, 255, 255), 2)
-
-                # 3. Calculate Force-Centered Coordinates
-                # We calculate the width of your hands, but ignore their position
-                well_width = xR_hand - xL_hand
-                center_screen = w / 2
-                
-                # Create boundaries centered on the screen
-                centered_L = center_screen - (well_width / 2)
-                centered_R = center_screen + (well_width / 2)
-
-                params_to_display.append(f"Width: {well_width:4.0f} px")
-                params_to_display.append(f"Status: Centered")
-
-                # 4. Generate Potential (Centered)
-                x_space = np.linspace(0, w, 400)
-                pot_profile = np.ones_like(x_space)
-                # Use centered_L/R instead of hand positions
-                pot_profile[(x_space > centered_L) & (x_space < centered_R)] = 0
-
-                """
-                # 5. Visualize the Centered Potential (Red Line)
-                display_pts = np.column_stack((
-                    x_space, 
-                    pot_profile * (h - 10) # simple scaling for viz
-                )).astype(np.int32)
-                cv2.polylines(frame, [display_pts], False, (0, 0, 255), 2)
-                """
-            # ----------------------------------------------------------
-            # ONE HAND = PINCH PARABOLA (QHO)
-            # ----------------------------------------------------------
-            elif len(res.multi_hand_landmarks) == 1:
-                mode_msg = "Mode: Pinch QHO"
-                lm = res.multi_hand_landmarks[0]
-
-                thumb = lm.landmark[THUMB_TIP_ID]
-                index = lm.landmark[INDEX_TIP_ID]
-
-                dx = index.x - thumb.x
-                dy = index.y - thumb.y
-                pinch_distance = math.sqrt(dx**2 + dy**2)
-
-                # Compute curvature
-                A = SLOPE * pinch_distance + INTERCEPT
-                A = max(A_MIN, min(A_MAX, A))
-
-                # This is already mathematically centered at 0
-                x_space = np.linspace(-1, 1, 400)
-                pot_profile = A * (x_space**2)
-
-                # Fixed visual scale
-                pot_profile = pot_profile / (PLOT_CEILING_A + EPS)
-                pot_profile = np.clip(pot_profile, 0.0, 1.0)
-
-                params_to_display.append(f"Pinch Dist: {pinch_distance:.4f}")
-                params_to_display.append(f"A (curv): {A:.4f}")
-
-                display_pts = np.column_stack((
-                    (x_space + 1)/2 * w,
-                    (1 - pot_profile) * h
-                )).astype(np.int32)
-
-                cv2.polylines(frame, [display_pts], False, (0, 0, 255), 2)
-
-        # ==============================================================
-        # STABILITY CHECK
-        # ==============================================================
-        if mode != 'wait':
-            if current_landmarks_flat and prev_landmarks:
-                if len(current_landmarks_flat) == len(prev_landmarks):
-                    movement = np.mean(np.abs(
-                        np.array(current_landmarks_flat)
-                        - np.array(prev_landmarks)
-                    ))
-                    if movement < MOVEMENT_THRESHOLD:
-                        stability_counter += 1
-                    else:
-                        stability_counter = 0
-                else:
-                    stability_counter = 0
-            else:
-                stability_counter = 0
-
-            prev_landmarks = current_landmarks_flat
-
-            # Show loading bar
-            if stability_counter > 0:
-                progress = stability_counter / REQUIRED_STABLE_FRAMES
-                bar_width = int(w * progress)
-                color = (0, 255*progress, 255*(1-progress))
-                cv2.rectangle(frame, (0, 0), (bar_width, 20), color, -1)
-                cv2.putText(frame, "HOLDING...", (10, 15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-
-            # Finished
-            if stability_counter >= REQUIRED_STABLE_FRAMES and pot_profile is not None:
-                captured_V = pot_profile
-                frame[:] = 255
-                cv2.imshow("Quantum Potential Input", frame)
-                cv2.waitKey(100)
-                print("Stable capture triggered!")
-                break
-
-        # --------------------------------------------------------------
-        # UI OVERLAY
-        # --------------------------------------------------------------
-        cv2.putText(frame, mode_msg, (10, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-        display_params(frame, params_to_display)
-        cv2.imshow("Quantum Potential Input", frame)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    # -----------------------------------------------------------------
-    cap.release()
-    cv2.destroyAllWindows()
-    return captured_V
 
 # Create a notebook-friendly version of the function
 
@@ -2286,6 +2938,7 @@ def display_params(frame, params_list, start_y=80):
 
 
 def cheese(tune=1, A_MIN=0, A_MAX=100, mode='wait'):
+    # Reverse Compatability, def capture_hand_potential()
     """
     Interactive camera capture for quantum potentials using MediaPipe hand tracking.
     
@@ -2304,23 +2957,15 @@ def cheese(tune=1, A_MIN=0, A_MAX=100, mode='wait'):
     -------
     captured_V : ndarray or None
         Captured potential profile (400 points, normalized 0-1)
-        
-    Examples
-    --------
-    >>> V_raw = cheese(A_MIN=0, A_MAX=100, mode='wait')
-    >>> # Will capture automatically when hands are stable
-    
-    Notes
-    -----
-    - Two hands: Creates square well (auto-centered)
-    - One hand (pinch): Creates harmonic oscillator based on pinch distance
-    - In 'wait' mode: Automatically captures after REQUIRED_STABLE_FRAMES
-    - Displays live feedback in Jupyter notebooks
     """
     import time
     import cv2
     import mediapipe as mp
-    from IPython.display import display, Image, clear_output
+    try:
+        from IPython.display import display, Image, clear_output
+    except ImportError:
+        display = None
+        clear_output = None
     
     # MediaPipe landmarks
     THUMB_TIP_ID = 4
@@ -2436,8 +3081,8 @@ def cheese(tune=1, A_MIN=0, A_MAX=100, mode='wait'):
                 display_pts = np.column_stack(((x_space + 1)/2 * w, (1 - pot_profile) * h)).astype(np.int32)
                 cv2.polylines(frame, [display_pts], False, (0, 0, 255), 2)
 
-        # STABILITY CHECK (only in wait mode)
-        if mode == 'wait':
+        # STABILITY CHECK (only if NOT in wait mode)
+        if mode != 'wait':
             if current_landmarks_flat and prev_landmarks and len(current_landmarks_flat) == len(prev_landmarks):
                 movement = np.mean(np.abs(np.array(current_landmarks_flat) - np.array(prev_landmarks)))
                 stability_counter = stability_counter + 1 if movement < MOVEMENT_THRESHOLD else 0
@@ -2458,7 +3103,7 @@ def cheese(tune=1, A_MIN=0, A_MAX=100, mode='wait'):
             if stability_counter >= REQUIRED_STABLE_FRAMES and pot_profile is not None:
                 captured_V = pot_profile
                 cap.release()
-                hands.close()
+                # cv2.destroyAllWindows() # Removed for headless/notebook stability
                 print("Stable capture triggered and video stream closed.")
                 return captured_V
 
@@ -2467,9 +3112,10 @@ def cheese(tune=1, A_MIN=0, A_MAX=100, mode='wait'):
         display_params(frame, params_to_display)
         
         # NOTEBOOK DISPLAY
-        clear_output(wait=True) 
-        _, buffer = cv2.imencode('.jpeg', frame)
-        display(Image(data=buffer.tobytes()))
+        if display is not None:
+            clear_output(wait=True) 
+            _, buffer = cv2.imencode('.jpeg', frame)
+            display(Image(data=buffer.tobytes()))
         
         time.sleep(0.01)
 
@@ -2479,7 +3125,10 @@ def cheese(tune=1, A_MIN=0, A_MAX=100, mode='wait'):
             break
 
     cap.release()
-    hands.close()
+    try:
+        cv2.destroyAllWindows()
+    except:
+        pass
     return captured_V
 
 
@@ -2512,7 +3161,7 @@ def verify_and_solve(V_raw_input, x, dx, T, L):
     Examples
     --------
     >>> E, psi, V = verify_and_solve(V_raw, x, dx, T, L)
-    >>> plot_educational(E, psi, V, x, no=0)
+    >>> plot_educate(E, psi, V, x, no=0)
     """
     if V_raw_input is None:
         print("Error: No potential captured!")
